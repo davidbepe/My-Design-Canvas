@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "design-canvas": {
+      "command": "node",
+      "args": ["C:/Users/Asus/Documents/My Tools As Designer/server/index.js"]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+# Paket npm (diunduh ulang dengan `npm install`)
+node_modules/
+
+# File sementara saat menyimpan
+*.tmp
+
+# Artboard yang dihapus dan snapshot versi editor (Git sudah menyimpan riwayatnya sendiri)
+designs/.trash/
+designs/.versions/
+
+# Pengaturan Claude Code khusus laptop ini
+.claude/settings.local.json

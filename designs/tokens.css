@@ -1,0 +1,35 @@
+/* Design tokens: dipakai semua artboard lewat var(--nama).
+   Diedit dari panel kanan editor (saat tidak ada yang dipilih), oleh Claude, atau manual. */
+:root {
+  /* Warna */
+  --color-primary: #111111;
+  --color-accent: #0d99ff;
+  --color-bg: #ffffff;
+  --color-surface: #f4f4f5;
+  --color-text: #111111;
+  --color-muted: #71717a;
+  --color-border: #e4e4e7;
+  /* Font */
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: Georgia, "Times New Roman", serif;
+  /* Ukuran teks */
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+  --text-2xl: 36px;
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  /* Shadow */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+}

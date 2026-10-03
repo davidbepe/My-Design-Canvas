@@ -1,0 +1,22 @@
+{
+  "artboards": [
+    {
+      "id": "login-mobile",
+      "name": "Login - Mobile",
+      "width": 390,
+      "height": 844,
+      "x": 0,
+      "y": 0,
+      "file": "login-mobile.html"
+    },
+    {
+      "id": "home-desktop",
+      "name": "Home - Desktop",
+      "width": 1440,
+      "height": 900,
+      "x": 470,
+      "y": 0,
+      "file": "home-desktop.html"
+    }
+  ]
+}

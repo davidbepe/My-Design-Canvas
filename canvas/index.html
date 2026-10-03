@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Canvas</title>
+<link rel="stylesheet" href="canvas.css">
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <div class="toolbar-group">
+        <span class="brand">Design Canvas</span>
+        <div class="tools">
+          <button class="tool active" data-tool="select" title="Select (V)">
+            <svg viewBox="0 0 16 16"><path d="M3.5 2.5l9 5-4 1-2 4z" /></svg>
+          </button>
+          <button class="tool" data-tool="hand" title="Hand / pan (H, atau tahan Space)">
+            <svg viewBox="0 0 16 16"><path d="M5.5 8V3.8a1 1 0 0 1 2 0V7.5M7.5 7V2.8a1 1 0 0 1 2 0V7.5M9.5 7.5V3.8a1 1 0 0 1 2 0V9c0 3-1.8 5-4.5 5-2 0-3-1-4-3L2 8.8a1 1 0 0 1 1.7-1L5.5 10" /></svg>
+          </button>
+          <span class="tool-sep"></span>
+          <button class="tool" data-tool="frame" title="Frame (F)">
+            <svg viewBox="0 0 16 16"><path d="M5 2v12M11 2v12M2 5h12M2 11h12" /></svg>
+          </button>
+          <button class="tool" data-tool="rect" title="Rectangle (R)">
+            <svg viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="9" rx="0.5" /></svg>
+          </button>
+          <button class="tool" data-tool="text" title="Text (T)">
+            <svg viewBox="0 0 16 16"><path d="M3 3.5h10M8 3.5v9.5M6 13h4" /></svg>
+          </button>
+          <button id="icons-btn" class="tool" title="Ikon (Shift+I)">
+            <svg viewBox="0 0 16 16"><path d="M8 2.2l1.7 3.6 3.9.5-2.9 2.7.8 3.9L8 11l-3.5 1.9.8-3.9-2.9-2.7 3.9-.5z" /></svg>
+          </button>
+        </div>
+        <div class="tools">
+          <button id="undo" class="tool" title="Undo (Ctrl+Z)" disabled>
+            <svg viewBox="0 0 16 16"><path d="M5.5 4L2.5 7l3 3M3 7h7a3.5 3.5 0 0 1 0 7H8" /></svg>
+          </button>
+          <button id="redo" class="tool" title="Redo (Ctrl+Shift+Z)" disabled>
+            <svg viewBox="0 0 16 16"><path d="M10.5 4l3 3-3 3M13 7H6a3.5 3.5 0 0 0 0 7h2" /></svg>
+          </button>
+        </div>
+      </div>
+      <div class="toolbar-group">
+        <span id="status" title="Koneksi ke server"></span>
+        <button id="code-btn" class="text-btn" title="Lihat kode elemen/artboard terpilih">&lt;/&gt;</button>
+        <button id="preview-btn" class="tool" title="Preview responsif">
+          <svg viewBox="0 0 16 16"><rect x="1.5" y="3" width="9" height="7" rx="1" /><rect x="11.5" y="5" width="3" height="7" rx="0.8" /><path d="M4 13h4" /></svg>
+        </button>
+        <button id="help-btn" class="text-btn" title="Daftar shortcut (?)">?</button>
+        <button id="fit" class="text-btn" title="Tampilkan semua (Shift+1)">Fit</button>
+        <button id="zoom" class="text-btn" title="Kembali ke 100% (Shift+0)">100%</button>
+      </div>
+    </header>
+
+    <aside id="left" class="panel">
+      <div class="tabs">
+        <button data-tab="layers" class="on">Layers</button>
+        <button data-tab="components">Komponen</button>
+        <button data-tab="versions">Versi</button>
+      </div>
+      <div id="layers" data-pane="layers"></div>
+      <div id="components" class="side-pane" data-pane="components" hidden></div>
+      <div id="versions" class="side-pane" data-pane="versions" hidden></div>
+    </aside>
+
+    <div id="stage">
+      <section id="viewport" tabindex="-1">
+        <div id="world"></div>
+        <div id="overlay"></div>
+        <div id="empty" hidden>
+          <p>Belum ada artboard.</p>
+          <p class="hint">Minta Claude: “buat artboard mobile 390×844 untuk halaman login”</p>
+        </div>
+      </section>
+      <div id="toast" hidden></div>
+      <div id="offline" hidden>
+        <strong>Server terputus.</strong>
+        Buka sesi Claude Code di folder ini supaya server menyala lagi.
+        <span class="offline-unsaved">Ada editan yang belum tersimpan; akan dikirim otomatis saat tersambung.</span>
+      </div>
+      <div id="icons" hidden>
+        <div class="help-head">
+          <span>Ikon</span>
+          <button id="icons-close" class="text-btn" title="Tutup">✕</button>
+        </div>
+        <input class="icon-search" placeholder="Cari ikon (bahasa Inggris), mis. home, user, arrow" spellcheck="false">
+        <div class="icon-grid"></div>
+        <div class="icon-hint">Klik ikon untuk menyisipkan ke frame/elemen terpilih · Lucide</div>
+      </div>
+      <div id="help" hidden>
+        <div class="help-head">
+          <span>Shortcut</span>
+          <button id="help-close" class="text-btn" title="Tutup">✕</button>
+        </div>
+        <dl>
+          <dt>Select / Hand</dt><dd>V / H</dd>
+          <dt>Frame / Rect / Text</dt><dd>F / R / T</dd>
+          <dt>Pindah urutan layer</dt><dd>Drag di panel Layers</dd>
+          <dt>Pan</dt><dd>Scroll · Space + drag</dd>
+          <dt>Zoom</dt><dd>Ctrl + scroll · Ctrl + / −</dd>
+          <dt>Tampilkan semua</dt><dd>Shift + 1</dd>
+          <dt>Zoom ke seleksi</dt><dd>Shift + 2</dd>
+          <dt>Zoom 100%</dt><dd>Shift + 0</dd>
+          <dt>Undo / Redo</dt><dd>Ctrl + Z / Ctrl + Shift + Z</dd>
+          <dt>Pilih banyak</dt><dd>Shift + klik</dd>
+          <dt>Pilih semua sejajar</dt><dd>Ctrl + A</dd>
+          <dt>Copy / Cut / Paste</dt><dd>Ctrl + C / X / V</dd>
+          <dt>Ikon</dt><dd>Shift + I</dd>
+          <dt>Jadikan komponen</dt><dd>Ctrl + Alt + K</dd>
+          <dt>Ukur jarak</dt><dd>Tahan Alt + arahkan mouse</dd>
+          <dt>Matikan snap</dt><dd>Tahan Ctrl saat drag</dd>
+          <dt>Gambar</dt><dd>Drag file / paste</dd>
+          <dt>Duplikat</dt><dd>Ctrl + D</dd>
+          <dt>Hapus</dt><dd>Delete</dd>
+          <dt>Edit teks</dt><dd>Double-click · Enter</dd>
+          <dt>Ganti nama artboard</dt><dd>Double-click nama</dd>
+          <dt>Pilih anak</dt><dd>Enter</dd>
+          <dt>Pilih induk</dt><dd>Esc · Shift + Enter</dd>
+          <dt>Geser artboard</dt><dd>Drag nama / drag artboard terpilih</dd>
+        </dl>
+      </div>
+    </div>
+
+    <aside id="right" class="panel">
+      <div id="props"></div>
+    </aside>
+  </div>
+
+  <div id="preview" class="modal" hidden>
+    <div class="modal-head">
+      <span class="preview-title modal-title"></span>
+      <div class="preview-toggles"></div>
+      <button class="preview-close text-btn" title="Tutup (Esc)">✕</button>
+    </div>
+    <div class="preview-body"></div>
+  </div>
+
+  <div id="code" class="modal" hidden>
+    <div class="modal-head">
+      <span class="code-title modal-title"></span>
+      <div class="code-tabs">
+        <button class="small-btn on" data-code-tab="html">HTML</button>
+        <button class="small-btn" data-code-tab="react">React</button>
+        <button class="small-btn" data-code-tab="css">CSS</button>
+      </div>
+      <div class="code-actions">
+        <button class="code-copy primary-btn">Salin</button>
+        <button class="code-close text-btn" title="Tutup (Esc)">✕</button>
+      </div>
+    </div>
+    <pre class="code-body"><code></code></pre>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
