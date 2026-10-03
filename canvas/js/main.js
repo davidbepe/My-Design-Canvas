@@ -128,6 +128,17 @@ function renderSidePanel() {
 on('open-tab', (name) => openPanel(name));
 on('panel', (name) => openPanel(name));
 
+// ---------- Field input: klik = pilih seluruh isi ----------
+// Seperti Figma: klik field angka/teks di panel langsung memilih semua isinya, jadi nilai baru
+// bisa langsung diketik tanpa menghapus dulu. Berlaku untuk semua panel (properti, variabel,
+// color picker, dll.). Ditunda sedikit karena browser menaruh kursor teks setelah fokus berpindah.
+const SELECT_ON_FOCUS = new Set(['text', 'number', 'search']);
+document.addEventListener('focusin', (e) => {
+  const input = e.target;
+  if (input.tagName !== 'INPUT' || !SELECT_ON_FOCUS.has(input.type)) return;
+  setTimeout(() => { if (document.activeElement === input) input.select(); });
+});
+
 // ---------- Shortcut keyboard ----------
 // Align ala Figma: Alt + A/H/D (kiri/tengah/kanan), Alt + W/V/S (atas/tengah/bawah)
 const ALIGN_KEYS = { KeyA: 'left', KeyH: 'hcenter', KeyD: 'right', KeyW: 'top', KeyV: 'vcenter', KeyS: 'bottom' };
