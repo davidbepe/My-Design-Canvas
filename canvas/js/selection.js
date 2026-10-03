@@ -7,7 +7,7 @@ import {
 import { toLocal, screenToWorld, worldToScreen, wantsPan, isPanning } from './camera.js';
 import { layoutArtboards } from './artboards.js';
 import { changeArtboard } from './actions.js';
-import { group, captureDoc } from './history.js';
+import { group, captureDoc, snapshot, pushDoc } from './history.js';
 import { isTextLeaf, startTextEdit, finishTextEdit, isEditingText, startRename } from './textedit.js';
 import { finishDraw, containerRefAt, artboardAt } from './draw.js';
 import {
@@ -62,7 +62,10 @@ export function initSelection(viewportEl, overlayEl) {
   viewportEl.addEventListener('pointerdown', (e) => onDown(e, viewportEl));
   viewportEl.addEventListener('pointermove', onMove);
   viewportEl.addEventListener('pointerup', onUp);
-  viewportEl.addEventListener('pointercancel', () => { gesture = null; });
+  viewportEl.addEventListener('pointercancel', () => {
+    if (gesture?.kind === 'reorder') endReorder(gesture);
+    gesture = null;
+  });
   viewportEl.addEventListener('pointerleave', () => { if (!gesture) setHover(null); });
   viewportEl.addEventListener('dblclick', onDoubleClick);
   addEventListener('keydown', onKey);
@@ -120,8 +123,12 @@ function onDown(e, viewportEl) {
     // Artboard bisa digeser lewat namanya, atau dari dalam artboard yang sedang terpilih.
     const movable = hit && (onLabel || inSelectedArtboard) ? hit.artboardId : null;
     // Elemen berposisi bebas (atau yang berada di dalamnya) bisa langsung di-drag.
-    const freeRef = !movable && hit?.path.length ? freeAncestor(hit) : null;
-    gesture = { kind: 'click', hit, movable, freeRef, shift: e.shiftKey, ...start(e, movable) };
+    const hitEl = !movable && hit?.path.length ? resolve(hit) : null;
+    // Prioritas drag: elemen bebas -> geser posisinya; anak auto layout -> ubah urutan; lainnya -> induk bebas.
+    const ownFree = hitEl && (isFree(hitEl) || isMovableGroup(hitEl));
+    const reorderRef = hitEl && !ownFree && reorderable(hitEl) ? hit : null;
+    const freeRef = hitEl && !reorderRef ? freeAncestor(hit) : null;
+    gesture = { kind: 'click', hit, movable, freeRef, reorderRef, shift: e.shiftKey, ...start(e, movable) };
   }
   viewportEl.setPointerCapture(e.pointerId);
 }
@@ -201,9 +208,11 @@ function onMove(e) {
   const dy = (e.clientY - gesture.py) / z;
 
   if (gesture.kind === 'click') {
-    if ((!gesture.movable && !gesture.freeRef) || Math.hypot(e.clientX - gesture.px, e.clientY - gesture.py) < DRAG_THRESHOLD) return;
+    if ((!gesture.movable && !gesture.freeRef && !gesture.reorderRef) || Math.hypot(e.clientX - gesture.px, e.clientY - gesture.py) < DRAG_THRESHOLD) return;
     setHover(null);
-    if (gesture.freeRef) {
+    if (gesture.reorderRef) {
+      startReorder(gesture, e);
+    } else if (gesture.freeRef) {
       // Mulai menggeser elemen berposisi bebas.
       const ref = gesture.freeRef;
       if (!isSelected(ref)) setSelection(ref);
@@ -217,6 +226,8 @@ function onMove(e) {
       gesture.kind = 'move';
     }
   }
+
+  if (gesture.kind === 'reorder') return moveReorder(gesture, e);
 
   if (gesture.kind === 'moveEl') {
     const { ref, items, startRect, boxes } = gesture;
@@ -306,6 +317,7 @@ function onUp(e) {
   if (!g) return;
   if (g.kind === 'vector') return vectorUp();
   if (g.kind === 'vectorEdit') return vectorEditUp();
+  if (g.kind === 'reorder') return finishReorder(g);
   clearGuides();
   drawOverlay();
   if (g.kind === 'moveEl' || g.kind === 'rotate') {
@@ -384,10 +396,13 @@ function onDoubleClick(e) {
   const label = labelAt(e);
   if (label) return startRename(label.parentElement.dataset.id);
   const hit = hitTest(e, true);
-  // Double-click group: masuk dan pilih elemen di dalamnya.
+  // Double-click elemen terpilih: masuk satu tingkat ke elemen di dalamnya (seperti Figma).
+  // Kalau yang dituju teks, langsung edit teksnya.
   const current = resolve(state.selection);
-  if (hit && isGroup(current) && !sameRef(hit, state.selection) && current.contains(resolve(hit))) {
+  const hitEl = hit && resolve(hit);
+  if (hit?.path.length && current && !sameRef(hit, state.selection) && current.contains(hitEl)) {
     setSelection(hit);
+    if (isTextLeaf(hitEl)) startTextEdit(hit);
     return;
   }
   if (hit?.path.length && isTextLeaf(resolve(hit))) {
@@ -399,7 +414,8 @@ function onDoubleClick(e) {
 }
 
 // Cari elemen di bawah kursor: tentukan artboard-nya, lalu tanya dokumen di dalam iframe.
-// deep = double-click: boleh masuk ke dalam group yang sedang terpilih.
+// deep = double-click: masuk satu tingkat ke dalam elemen yang sedang terpilih.
+// Ctrl + klik = langsung elemen terdalam.
 function hitTest(e, deep = false) {
   const label = labelAt(e);
   if (label) return { artboardId: label.parentElement.dataset.id, path: [] };
@@ -415,25 +431,122 @@ function hitTest(e, deep = false) {
     if (!target || target === doc.body || target === doc.documentElement) return root;
     target = target.closest('svg') ?? target; // ikon SVG dipilih utuh, bukan per garis
     target = target.closest(`[${COMPONENT_ROLE}="instance"]`) ?? target; // instance komponen dipilih utuh
-    target = groupTarget(target, deep);
+    if (!e.ctrlKey && !e.metaKey) target = scopedTarget(target, deep);
     const path = pathOf(target);
     return path ? { artboardId: a.id, path } : root;
   }
   return null;
 }
 
-// Klik isi group = pilih group-nya (seperti Figma), kecuali sudah berada di dalam group itu.
-function groupTarget(target, deep) {
+// Pemilihan ala Figma: klik memilih elemen paling luar (anak langsung artboard), atau elemen yang
+// selevel dengan yang sedang terpilih. Klik di dalam elemen terpilih tetap memilih elemen itu
+// (supaya bisa di-drag); double-click masuk satu tingkat ke dalamnya. Berlaku juga untuk group.
+function scopedTarget(target, deep) {
+  const doc = target.ownerDocument;
   const sel = resolve(state.selection);
-  const groups = [];
-  for (let p = target.parentElement; p && p.tagName !== 'BODY'; p = p.parentElement) if (isGroup(p)) groups.unshift(p);
-  for (const g of groups) {
-    if (sel && sel !== g && g.contains(sel)) continue; // elemen di dalam group ini sedang terpilih
-    if (sel === g && deep) continue; // double-click group yang terpilih = masuk ke dalamnya
-    return g;
+  let scope = doc.body;
+  if (sel && sel.ownerDocument === doc && sel !== doc.body) {
+    if (sel === target || sel.contains(target)) {
+      if (!deep) return sel;
+      scope = sel;
+    } else {
+      // Induk terdekat yang memuat elemen terpilih dan elemen yang diklik: pilih di level itu.
+      let anc = sel.parentElement;
+      while (anc && !anc.contains(target)) anc = anc.parentElement;
+      scope = anc ?? doc.body;
+    }
   }
-  return target;
+  let el = target;
+  while (el.parentElement && el.parentElement !== scope) el = el.parentElement;
+  return el.parentElement === scope ? el : target;
 }
+
+// ---------- Drag untuk mengubah urutan di auto layout ----------
+// Seperti Figma/pen.dev: elemen terangkat mengikuti kursor, saudara-saudaranya otomatis bergeser
+// memberi tempat, dan urutannya berubah saat dilepas. Selama drag hanya gaya sementara yang dipakai.
+
+function reorderable(el) {
+  const parent = el.parentElement;
+  if (!parent || el.tagName === 'BODY' || isFree(el)) return false;
+  const display = el.ownerDocument.defaultView.getComputedStyle(parent).display;
+  return /flex|grid/.test(display) && visibleChildren(parent).length > 1;
+}
+
+function startReorder(g, e) {
+  const ref = g.reorderRef;
+  const el = resolve(ref);
+  const a = getArtboard(ref.artboardId);
+  if (!isSelected(ref)) setSelection(ref);
+  const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+  const pt = pointIn(a, e);
+  const r = el.getBoundingClientRect();
+  Object.assign(g, {
+    kind: 'reorder', ref, el, a, parent: el.parentElement,
+    before: snapshot(ref.artboardId),
+    hadStyle: el.hasAttribute('style'),
+    saved: { translate: el.style.translate, position: el.style.position, 'z-index': el.style.zIndex, opacity: el.style.opacity },
+    grab: { x: pt.x - r.left, y: pt.y - r.top },
+  });
+  // Angkat elemen: di atas saudara-saudaranya dan sedikit transparan.
+  if (cs.position === 'static') el.style.position = 'relative';
+  el.style.zIndex = '1000';
+  el.style.opacity = String((Number(cs.opacity) || 1) * 0.85);
+}
+
+function moveReorder(g, e) {
+  const { el, parent, a } = g;
+  const pt = pointIn(a, e);
+  const pcs = el.ownerDocument.defaultView.getComputedStyle(parent);
+  const flowsInRows = pcs.display.includes('grid') || pcs.flexDirection.startsWith('row');
+  const reverse = pcs.flexDirection.endsWith('reverse');
+  const sibs = visibleChildren(parent).filter((c) => c !== el);
+  // Elemen disisipkan sebelum saudara pertama yang "sesudah" posisi kursor (urutan baca).
+  let index = sibs.length;
+  for (const [i, sib] of sibs.entries()) {
+    const r = sib.getBoundingClientRect();
+    const before = flowsInRows
+      ? pt.y < r.top || (pt.y < r.bottom && (reverse ? pt.x > r.left + r.width / 2 : pt.x < r.left + r.width / 2))
+      : (reverse ? pt.y > r.top + r.height / 2 : pt.y < r.top + r.height / 2);
+    if (before) { index = i; break; }
+  }
+  if (visibleChildren(parent).indexOf(el) !== index) {
+    if (index < sibs.length) parent.insertBefore(el, sibs[index]);
+    else sibs.at(-1).after(el);
+    setSelection({ artboardId: g.ref.artboardId, path: pathOf(el) });
+  }
+  // Elemen mengikuti kursor dari tempat barunya.
+  el.style.translate = '';
+  const r = el.getBoundingClientRect();
+  el.style.translate = `${round2(pt.x - g.grab.x - r.left)}px ${round2(pt.y - g.grab.y - r.top)}px`;
+  emit('layout');
+}
+
+function endReorder(g) {
+  const { el, saved } = g;
+  for (const [prop, value] of Object.entries(saved)) {
+    if (value) el.style.setProperty(prop, value);
+    else el.style.removeProperty(prop);
+  }
+  if (!g.hadStyle && !el.getAttribute('style')) el.removeAttribute('style');
+}
+
+function finishReorder(g) {
+  endReorder(g);
+  const id = g.ref.artboardId;
+  const ref = { artboardId: id, path: pathOf(g.el) };
+  pushDoc(id, 'Ubah urutan', g.before, snapshot(id), [g.ref], [ref]);
+  setSelection(ref);
+  emit('structure', id);
+}
+
+// Posisi kursor dalam koordinat artboard (= koordinat di dalam iframe).
+function pointIn(a, e) {
+  const { sx, sy } = toLocal(e);
+  const w = screenToWorld(sx, sy);
+  return { x: w.x - a.x, y: w.y - a.y };
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
 
 const angleOf = (c, sx, sy) => (Math.atan2(sy - c.y, sx - c.x) * 180) / Math.PI;
 
