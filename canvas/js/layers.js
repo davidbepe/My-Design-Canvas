@@ -1,15 +1,20 @@
 // Panel Layers: struktur elemen setiap artboard, seperti panel Layers di Figma.
 // Layer bisa di-drag untuk mengubah urutan atau memindahkannya ke dalam frame lain.
 import {
-  state, emit, setHover, setSelection, toggleSelection, isSelected, docOf, resolve, pathOf, sameRef, visibleChildren,
+  state, emit, on, setHover, setSelection, toggleSelection, isSelected, docOf, resolve, pathOf, sameRef, visibleChildren,
   HIDDEN_TAGS, CONTAINER_TAGS, COMPONENT_ROLE, COMPONENT_NAME,
 } from './state.js';
 import { recordDoc } from './history.js';
+import { changeArtboard } from './actions.js';
+import { renameComponent } from './components.js';
 import { SHAPE_LABELS } from './shapes.js';
 
 const ICONS = {
   artboard: '<svg viewBox="0 0 14 14"><path d="M4.5 1.5v11M9.5 1.5v11M1.5 4.5h11M1.5 9.5h11"/></svg>',
-  frame: '<svg viewBox="0 0 14 14"><rect x="2.5" y="2.5" width="9" height="9" rx="1"/></svg>',
+  frame: '<svg viewBox="0 0 14 14"><path d="M4.5 1.5v11M9.5 1.5v11M1.5 4.5h11M1.5 9.5h11"/></svg>',
+  'auto-v': '<svg viewBox="0 0 14 14"><rect x="3" y="1.5" width="8" height="3" rx=".6"/><rect x="3" y="5.5" width="8" height="3" rx=".6"/><rect x="3" y="9.5" width="8" height="3" rx=".6"/></svg>',
+  'auto-h': '<svg viewBox="0 0 14 14"><rect x="1.5" y="3" width="3" height="8" rx=".6"/><rect x="5.5" y="3" width="3" height="8" rx=".6"/><rect x="9.5" y="3" width="3" height="8" rx=".6"/></svg>',
+  grid: '<svg viewBox="0 0 14 14"><rect x="2" y="2" width="4" height="4" rx=".6"/><rect x="8" y="2" width="4" height="4" rx=".6"/><rect x="2" y="8" width="4" height="4" rx=".6"/><rect x="8" y="8" width="4" height="4" rx=".6"/></svg>',
   text: '<svg viewBox="0 0 14 14"><path d="M3 3.5h8M7 3.5v8"/></svg>',
   image: '<svg viewBox="0 0 14 14"><rect x="2" y="2.5" width="10" height="9" rx="1"/><path d="M2.5 10l3-3 2.5 2.5 1.5-1.5 2 2"/></svg>',
   input: '<svg viewBox="0 0 14 14"><rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M4 5.8v2.4"/></svg>',
@@ -27,6 +32,8 @@ let container;
 let dropLine;
 let rows = [];
 let drag = null; // { ref, row, startY, active, drop }
+let lastClick = null; // { key, time }: untuk mengenali double-click (baris digambar ulang di antara klik)
+const DOUBLE_CLICK_MS = 400;
 const expanded = new Set();
 const knownArtboards = new Set();
 
@@ -34,6 +41,11 @@ const keyOf = (ref) => `${ref.artboardId}:${ref.path.join('.')}`;
 
 export function initLayers(el) {
   container = el;
+  // Buka layer tertentu di panel (mis. setelah Shift+A membungkus elemen), supaya hasilnya terlihat.
+  on('expand-layers', (refs) => {
+    for (const ref of refs) expanded.add(keyOf(ref));
+    renderLayers();
+  });
   container.addEventListener('pointerleave', () => { if (!drag) setHover(null); });
   dropLine = document.createElement('div');
   dropLine.className = 'drop-line';
@@ -55,7 +67,8 @@ export function renderLayers({ reveal = false } = {}) {
   for (const a of state.artboards) {
     const ref = { artboardId: a.id, path: [] };
     const body = docOf(a.id)?.body;
-    const info = { icon: 'artboard', name: a.name, meta: `${a.width}×${a.height}`, artboard: true };
+    // Ikon frame utama juga menunjukkan jenisnya: # (frame biasa) atau tumpukan (auto layout).
+    const info = { icon: body ? layoutIcon(body) : 'frame', name: a.name, meta: `${a.width}×${a.height}`, artboard: true };
     addRow(frag, ref, 0, info, !!body && visibleChildren(body).length > 0);
     if (body && expanded.has(keyOf(ref))) walk(frag, body, ref, 1);
   }
@@ -104,7 +117,7 @@ function addRow(frag, ref, depth, info, hasKids) {
 
   row.addEventListener('pointerenter', () => { if (!drag) setHover(ref); });
   row.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0 || e.target.closest('.layer-caret')) return;
+    if (e.button !== 0 || e.target.closest('.layer-caret') || e.target.isContentEditable) return;
     drag = { ref, row, startY: e.clientY, active: false, drop: null, shift: e.shiftKey };
     row.setPointerCapture(e.pointerId);
   });
@@ -123,6 +136,16 @@ function addRow(frag, ref, depth, info, hasKids) {
     const d = drag;
     endDrag();
     if (!d.active) {
+      // Double-click = ganti nama. Dicek manual, karena klik pertama memilih layer dan panel digambar
+      // ulang, sehingga browser tidak selalu mengenali dua klik itu sebagai double-click.
+      const key = keyOf(ref);
+      const now = performance.now();
+      if (!d.shift && lastClick?.key === key && now - lastClick.time < DOUBLE_CLICK_MS) {
+        lastClick = null;
+        startLayerRename(ref, row);
+        return;
+      }
+      lastClick = { key, time: now };
       if (d.shift) toggleSelection(ref);
       else setSelection(ref);
     }
@@ -131,6 +154,46 @@ function addRow(frag, ref, depth, info, hasKids) {
   row.addEventListener('pointercancel', endDrag);
   frag.append(row);
   rows.push({ ref, el: row, depth, hasKids, expanded: hasKids && expanded.has(keyOf(ref)) });
+}
+
+// ---------- Ganti nama (double-click) ----------
+// Frame utama: nama di manifest. Master komponen: nama komponen. Elemen lain: atribut data-name.
+function startLayerRename(ref, row) {
+  const el = ref.path.length ? resolve(ref) : null;
+  if (el?.getAttribute(COMPONENT_ROLE) === 'instance') return; // nama salinan mengikuti master
+  const nameEl = row.querySelector('.layer-name');
+  const original = nameEl.textContent;
+  nameEl.setAttribute('contenteditable', 'plaintext-only');
+  nameEl.classList.add('editing');
+  nameEl.focus();
+  getSelection().selectAllChildren(nameEl);
+  const done = (save) => {
+    nameEl.removeEventListener('keydown', onKey);
+    nameEl.removeEventListener('blur', onBlur);
+    nameEl.removeAttribute('contenteditable');
+    nameEl.classList.remove('editing');
+    const name = nameEl.textContent.trim();
+    if (!save || !name || name === original) {
+      nameEl.textContent = original;
+      return;
+    }
+    if (!el) {
+      changeArtboard(ref.artboardId, { name }, 'Ganti nama frame');
+    } else if (el.getAttribute(COMPONENT_ROLE) === 'master') {
+      renameComponent(ref, name);
+    } else {
+      recordDoc(ref.artboardId, 'Ganti nama layer', () => el.setAttribute('data-name', name));
+      emit('structure', ref.artboardId);
+    }
+  };
+  const onKey = (e) => {
+    e.stopPropagation(); // Enter/Esc/Delete jangan ikut memicu shortcut kanvas
+    if (e.key === 'Enter') { e.preventDefault(); nameEl.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); done(false); }
+  };
+  const onBlur = () => done(true);
+  nameEl.addEventListener('keydown', onKey);
+  nameEl.addEventListener('blur', onBlur);
 }
 
 // ---------- Drag untuk mengubah urutan ----------
@@ -229,8 +292,23 @@ function describe(el) {
   }
   const text = el.textContent.trim().replace(/\s+/g, ' ');
   if (el.children.length === 0 && text) return { icon: 'text', name: text.slice(0, 40), meta: tag };
-  const name = el.id || el.classList[0] || tag;
-  return { icon: 'frame', name, meta: name === tag ? '' : tag };
+  // Nama: data-name (mis. nama artboard yang dimasukkan), id, atau class. Frame tanpa nama khusus
+  // dinamai sesuai jenisnya, supaya frame biasa dan auto layout mudah dibedakan.
+  const icon = layoutIcon(el);
+  const cls = el.classList[0];
+  const generic = !el.id && (!cls || cls === 'frame') && tag === 'div';
+  const name = el.getAttribute('data-name') || (generic ? LAYOUT_NAMES[icon] : el.id || cls || tag);
+  return { icon, name, meta: name === tag ? '' : tag };
+}
+
+const LAYOUT_NAMES = { frame: 'Frame', 'auto-v': 'Auto layout', 'auto-h': 'Auto layout', grid: 'Grid' };
+
+// Frame biasa (#) atau auto layout (tumpukan vertikal/horizontal), seperti ikon layer di Figma.
+function layoutIcon(el) {
+  const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+  if (cs.display.includes('grid')) return 'grid';
+  if (cs.display.includes('flex')) return cs.flexDirection.startsWith('row') ? 'auto-h' : 'auto-v';
+  return 'frame';
 }
 
 function span(className, text) {

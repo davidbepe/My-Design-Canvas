@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<title>Design Canvas Capture</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <strong>Design Canvas Capture</strong>
+    <span id="status" class="status">Memeriksa kanvas…</span>
+  </header>
+
+  <div class="actions">
+    <button id="pick" class="primary">Pilih elemen</button>
+    <button id="page">Seluruh halaman</button>
+  </div>
+
+  <fieldset>
+    <legend>Hasil tangkapan</legend>
+    <label><input type="radio" name="mode" value="copy"> Salin, lalu tempel di kanvas (Ctrl+V)</label>
+    <label><input type="radio" name="mode" value="frame"> Kirim sebagai frame baru</label>
+  </fieldset>
+
+  <label class="server">Alamat kanvas
+    <input id="server" type="text" spellcheck="false">
+  </label>
+
+  <p class="tip">Shortcut: Alt+Shift+D untuk langsung memilih elemen.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,31 +1,22 @@
 {
   "artboards": [
     {
-      "id": "frame-1",
-      "name": "Frame 1",
-      "width": 1440,
-      "height": 900,
-      "x": 2064,
-      "y": -199,
-      "file": "frame-1.html"
+      "id": "frame-5",
+      "name": "Frame 5",
+      "width": 983,
+      "height": 1438,
+      "x": 2173,
+      "y": 365,
+      "file": "frame-5.html"
     },
     {
-      "id": "image",
-      "name": "image",
-      "width": 350,
-      "height": 131,
-      "x": 3707,
-      "y": 0,
-      "file": "image.html"
-    },
-    {
-      "id": "frame-2",
-      "name": "Frame 2",
-      "width": 530,
-      "height": 273,
-      "x": 1361,
-      "y": -22,
-      "file": "frame-2.html"
+      "id": "login-mobile",
+      "name": "Login - Mobile",
+      "width": 390,
+      "height": 844,
+      "x": 3236,
+      "y": 365,
+      "file": "login-mobile.html"
     }
   ]
 }

@@ -213,7 +213,7 @@ async function renameVariable(oldName, newName) {
       updated++;
     }
   });
-  toast(updated ? `Nama diganti; ${updated} artboard ikut diperbarui` : 'Nama variabel diganti');
+  toast(updated ? `Nama diganti; ${updated} frame ikut diperbarui` : 'Nama variabel diganti');
 }
 
 function newGroupForm(onDone) {
@@ -313,7 +313,7 @@ function modeHeader(mode, index) {
   const th = el('th', 'var-col-mode');
   const input = el('input', 'var-mode-name');
   input.value = mode;
-  input.title = index === 0 ? 'Mode default (dipakai kalau artboard tidak memilih mode)' : 'Ganti nama mode';
+  input.title = index === 0 ? 'Mode default (dipakai kalau frame tidak memilih mode)' : 'Ganti nama mode';
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
   input.addEventListener('change', () => renameMode(mode, input.value.trim()));
   th.append(input);
@@ -365,7 +365,7 @@ async function addMode() {
   const next = cloneData();
   next.modes.push(data.modes.length === 1 ? 'Dark' : `Mode ${n}`);
   if (await saveVariables(next, 'Tambah mode')) {
-    toast('Mode ditambahkan. Isi nilai yang berbeda; kolom kosong ikut nilai default. Pilih mode per artboard di panel kanan.');
+    toast('Mode ditambahkan. Isi nilai yang berbeda; kolom kosong ikut nilai default. Pilih mode per frame utama di panel kanan (bagian Theme).');
   }
 }
 
@@ -399,7 +399,7 @@ function updateArtboardModes(oldSlug, newSlug) {
   for (const a of state.artboards) {
     const root = docOf(a.id)?.documentElement;
     if (root?.getAttribute('data-mode') !== oldSlug) continue;
-    recordDoc(a.id, 'Ganti mode artboard', () => {
+    recordDoc(a.id, 'Ganti mode frame', () => {
       if (newSlug) root.setAttribute('data-mode', newSlug);
       else root.removeAttribute('data-mode');
     });

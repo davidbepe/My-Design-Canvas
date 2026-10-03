@@ -32,14 +32,14 @@ export async function openCode() {
   const ref = state.selection;
   const el = resolve(ref);
   const a = ref && getArtboard(ref.artboardId);
-  if (!el || !a) return toast('Pilih artboard atau elemen untuk melihat kodenya');
+  if (!el || !a) return toast('Pilih frame atau elemen untuk melihat kodenya');
   const doc = docOf(a.id);
   const tokensCss = await fetch(`/designs/tokens.css?v=${Date.now()}`).then((r) => r.text()).catch(() => '');
   const pageCss = [...doc.querySelectorAll('style')].map((s) => dedent(s.textContent)).join('\n\n');
   const isRoot = !ref.path.length;
   const componentName = pascal(isRoot ? a.name : layerName(el));
 
-  current.css = [tokensCss.trim(), pageCss.trim()].filter(Boolean).join('\n\n/* Style artboard */\n') + '\n';
+  current.css = [tokensCss.trim(), pageCss.trim()].filter(Boolean).join('\n\n/* Style frame utama */\n') + '\n';
   if (isRoot) {
     current.html = standaloneHtml(doc, tokensCss);
     const kids = significantChildren(doc.body, 'jsx');

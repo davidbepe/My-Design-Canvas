@@ -1,7 +1,8 @@
 // Aksi editor yang bisa di-undo: ubah/duplikat/hapus artboard dan elemen.
 // Semua aksi bekerja untuk SEMUA elemen yang terpilih (multi-select).
 import {
-  state, getArtboard, resolve, pathOf, setSelectionList, visibleChildren, emit, demoteMasters, demoteMastersInHtml,
+  state, getArtboard, resolve, pathOf, setSelection, setSelectionList, visibleChildren, emit, demoteMasters, demoteMastersInHtml,
+  docOf,
 } from './state.js';
 import { push, group, recordDoc, snapshot } from './history.js';
 import * as api from './api.js';
@@ -115,18 +116,73 @@ function duplicateArtboard(id) {
   const maxRight = Math.max(...state.artboards.map((b) => b.x + b.width));
   return createArtboardWithHistory(
     { name: `${a.name} copy`, width: a.width, height: a.height, x: maxRight + GAP, y: a.y, html: demoteMastersInHtml(snapshot(id)) },
-    'Duplikat artboard',
+    'Duplikat frame',
   );
 }
 
-async function deleteArtboard(id) {
+export async function deleteArtboard(id) {
   const a = getArtboard(id);
   if (!a) return;
   const data = { id: a.id, name: a.name, width: a.width, height: a.height, x: a.x, y: a.y, html: snapshot(id) };
   await api.deleteArtboard(id);
   push({
-    label: 'Hapus artboard',
+    label: 'Hapus frame',
     undo: () => api.createArtboard(data),
     redo: () => api.deleteArtboard(data.id),
   });
+}
+
+// Frame utama -> <div> frame biasa di dokumen `doc`: gaya <body>-nya, ukurannya, dan isinya ikut.
+// Dipakai saat frame utama dimasukkan ke frame lain, atau dibungkus auto layout (Shift+A).
+export function frameFromArtboard(srcId, doc) {
+  const src = getArtboard(srcId);
+  const srcDoc = docOf(srcId);
+  const frame = doc.createElement('div');
+  frame.className = 'frame';
+  frame.setAttribute('data-name', src.name);
+  frame.style.cssText = srcDoc.body.getAttribute('style') ?? '';
+  if (frame.style.minHeight === '100vh') frame.style.removeProperty('min-height'); // khusus halaman, bukan frame
+  frame.style.width = `${src.width}px`;
+  frame.style.height = `${src.height}px`;
+  frame.style.flexShrink = '0';
+  frame.style.boxSizing = 'border-box';
+  const cs = srcDoc.defaultView.getComputedStyle(srcDoc.body);
+  if (cs.backgroundColor === 'rgba(0, 0, 0, 0)' && cs.backgroundImage === 'none') frame.style.background = '#ffffff'; // frame utama = latar putih
+  frame.innerHTML = srcDoc.body.innerHTML;
+  return frame;
+}
+
+// Shift+A pada frame utama yang sudah auto layout (seperti Figma): buat frame utama baru ber-auto
+// layout di posisi yang sama, lalu frame lama masuk ke dalamnya. Satu langkah undo.
+export async function wrapArtboardInAutoLayout(id) {
+  const src = getArtboard(id);
+  if (!src || !docOf(id)?.body) return;
+  const doc = new DOMParser().parseFromString(snapshot(id), 'text/html');
+  const name = nextFrameName();
+  doc.title = name;
+  doc.body.setAttribute('style', 'display: flex; flex-direction: column; gap: 8px; min-height: 100vh;');
+  doc.body.replaceChildren(frameFromArtboard(id, doc));
+  const html = `<!doctype html>\n${doc.documentElement.outerHTML}\n`;
+  let created = null;
+  await group('Bungkus dengan auto layout', async () => {
+    created = await createArtboardWithHistory({ name, width: src.width, height: src.height, x: src.x, y: src.y, html }, 'Bungkus dengan auto layout');
+    if (created) await deleteArtboard(id);
+  });
+  if (created) {
+    setSelection({ artboardId: created.id, path: [] });
+    // Buka frame utama baru dan frame lama di dalamnya di panel Layers.
+    emit('expand-layers', [{ artboardId: created.id, path: [] }, { artboardId: created.id, path: [0] }]);
+  }
+}
+
+// Nama "Frame N" berikutnya. Nama frame yang sudah masuk ke frame lain (data-name) juga dihitung,
+// supaya tidak ada dua frame bernama sama, mis. Frame 1 di dalam Frame 1.
+export function nextFrameName(alsoTaken = []) {
+  const taken = new Set([...state.artboards.map((a) => a.name), ...alsoTaken]);
+  for (const a of state.artboards) {
+    for (const el of docOf(a.id)?.querySelectorAll('[data-name]') ?? []) taken.add(el.getAttribute('data-name'));
+  }
+  let n = 1;
+  while (taken.has(`Frame ${n}`)) n++;
+  return `Frame ${n}`;
 }

@@ -41,7 +41,7 @@ export const isPreviewOpen = () => !!artboardId;
 
 export function openPreview() {
   const ref = state.selection;
-  if (!ref) return toast('Pilih artboard (atau elemen di dalamnya) untuk dipreview');
+  if (!ref) return toast('Pilih frame (atau elemen di dalamnya) untuk dipreview');
   artboardId = ref.artboardId;
   trail = [];
   overlay.hidden = false;
@@ -55,7 +55,7 @@ function follow(target) {
     if (!trail.length) return;
     artboardId = trail.pop();
   } else {
-    if (!getArtboard(target)) return toast('Artboard tujuan sudah tidak ada');
+    if (!getArtboard(target)) return toast('Frame tujuan sudah tidak ada');
     trail.push(artboardId);
     artboardId = target;
   }

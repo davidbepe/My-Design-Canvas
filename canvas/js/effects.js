@@ -45,16 +45,39 @@ function parseShadow(str) {
 const shadowCss = (s, withSpread = true) =>
   `${s.type === 'inner' ? 'inset ' : ''}${s.x}px ${s.y}px ${s.blur}px${withSpread ? ` ${s.spread}px` : ''} ${s.color}`;
 
+// Penyesuaian warna lewat CSS filter (seperti "Adjustments" di aplikasi desain).
+export const ADJUSTMENTS = {
+  brightness: { label: 'Brightness', unit: '%', def: 120 },
+  contrast: { label: 'Contrast', unit: '%', def: 120 },
+  saturate: { label: 'Saturation', unit: '%', def: 150 },
+  grayscale: { label: 'Grayscale', unit: '%', def: 100, max: 100 },
+  sepia: { label: 'Sepia', unit: '%', def: 100, max: 100 },
+  'hue-rotate': { label: 'Hue rotate', unit: '°', def: 90 },
+  invert: { label: 'Invert', unit: '%', def: 100, max: 100 },
+};
+
+// Nilai fungsi filter -> angka di panel: "1.2" / "120%" -> 120, "90deg" -> 90.
+function adjustValue(fn, arg) {
+  const n = parseFloat(arg);
+  if (fn === 'hue-rotate') return arg.endsWith('turn') ? n * 360 : arg.endsWith('rad') ? (n * 180) / Math.PI : n;
+  return arg.trim().endsWith('%') ? n : n * 100;
+}
+const adjustCss = (e) => `${e.fn}(${round(e.value)}${e.fn === 'hue-rotate' ? 'deg' : '%'})`;
+
 // Baca semua efek elemen dari style hasil hitungan browser.
 // svg = shape/vector SVG: bayangan mengikuti bentuknya lewat filter drop-shadow.
 export function readEffects(cs, svg) {
   const list = [];
   if (!svg && cs.boxShadow && cs.boxShadow !== 'none') list.push(...splitTop(cs.boxShadow).map(parseShadow));
+  if (cs.textShadow && cs.textShadow !== 'none') {
+    list.push(...splitTop(cs.textShadow).map((t) => ({ ...parseShadow(t), type: 'text' })));
+  }
   for (const fn of filterFns(cs.filter)) {
     const m = fn.match(/^([\w-]+)\((.*)\)$/s);
     if (!m) continue;
     if (m[1] === 'blur') list.push({ type: 'layer-blur', blur: parseFloat(m[2]) || 0 });
-    if (m[1] === 'drop-shadow' && svg) list.push(parseShadow(m[2]));
+    else if (m[1] === 'drop-shadow' && svg) list.push(parseShadow(m[2]));
+    else if (ADJUSTMENTS[m[1]]) list.push({ type: 'adjust', fn: m[1], value: adjustValue(m[1], m[2]) });
   }
   const bd = filterFns(cs.backdropFilter).find((f) => f.startsWith('blur('));
   if (bd) list.push({ type: 'bg-blur', blur: parseFloat(bd.slice(5)) || 0 });
@@ -66,29 +89,45 @@ function filterFns(value) {
   return splitTop(value, ' ');
 }
 
-// Tulis daftar efek ke elemen. Fungsi filter lain (mis. brightness) dari kode yang sudah ada dipertahankan.
+// Tulis daftar efek ke elemen. Fungsi filter yang tidak dikenali panel (dari kode yang sudah ada) dipertahankan.
 export function effectStyles(el, list, svg) {
   const cs = el.ownerDocument.defaultView.getComputedStyle(el);
-  const keep = filterFns(cs.filter).filter((f) => !f.startsWith('blur(') && !(svg && f.startsWith('drop-shadow(')));
+  const handled = (f) => f.startsWith('blur(') || (svg && f.startsWith('drop-shadow(')) || Object.keys(ADJUSTMENTS).some((k) => f.startsWith(`${k}(`));
+  const keep = filterFns(cs.filter).filter((f) => !handled(f));
   const shadows = list.filter((e) => e.type === 'drop' || e.type === 'inner');
+  const texts = list.filter((e) => e.type === 'text');
   const blur = list.find((e) => e.type === 'layer-blur');
   const bg = list.find((e) => e.type === 'bg-blur');
   const filter = [
     ...keep,
     ...(svg ? shadows.filter((s) => s.type === 'drop').map((s) => `drop-shadow(${shadowCss(s, false)})`) : []),
+    ...list.filter((e) => e.type === 'adjust').map(adjustCss),
     ...(blur ? [`blur(${blur.blur}px)`] : []),
   ];
   return {
     'box-shadow': svg || !shadows.length ? null : shadows.map((s) => shadowCss(s)).join(', '),
+    'text-shadow': texts.length ? texts.map((t) => `${t.x}px ${t.y}px ${t.blur}px ${t.color}`).join(', ') : null,
     filter: filter.length ? filter.join(' ') : null,
     'backdrop-filter': bg ? `blur(${bg.blur}px)` : null,
     '-webkit-backdrop-filter': bg ? `blur(${bg.blur}px)` : null,
   };
 }
 
+// Efek baru dari menu +. Kunci "adjust:<fungsi>" untuk penyesuaian warna.
+export function defaultEffect(key) {
+  if (key.startsWith('adjust:')) {
+    const fn = key.slice(7);
+    return { type: 'adjust', fn, value: ADJUSTMENTS[fn].def };
+  }
+  return structuredClone(DEFAULT_EFFECTS[key]);
+}
+
+export const effectKey = (e) => (e.type === 'adjust' ? `adjust:${e.fn}` : e.type);
+
 export const DEFAULT_EFFECTS = {
   drop: { type: 'drop', x: 0, y: 4, blur: 12, spread: 0, color: 'rgba(0, 0, 0, 0.25)' },
   inner: { type: 'inner', x: 0, y: 2, blur: 4, spread: 0, color: 'rgba(0, 0, 0, 0.25)' },
+  text: { type: 'text', x: 0, y: 2, blur: 4, color: 'rgba(0, 0, 0, 0.35)' },
   'layer-blur': { type: 'layer-blur', blur: 4 },
   'bg-blur': { type: 'bg-blur', blur: 12 },
 };

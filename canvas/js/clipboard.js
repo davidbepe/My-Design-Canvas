@@ -88,7 +88,7 @@ async function pasteItems(items) {
   const artboards = items.filter((i) => i.type === 'artboard');
   const target = elements.length ? insertionTarget(elements) : null;
   if (elements.length && !target) {
-    toast('Pilih frame, elemen, atau artboard tujuan dulu');
+    toast('Pilih frame atau elemen tujuan dulu');
     if (!artboards.length) return;
   }
 
@@ -107,7 +107,7 @@ async function pasteItems(items) {
     let x = Math.max(0, ...state.artboards.map((a) => a.x + a.width)) + GAP;
     for (const item of artboards) {
       const created = await createArtboardWithHistory(
-        { ...item.data, name: `${item.data.name} copy`, x, y: 0, html: demoteMastersInHtml(item.html) }, 'Paste artboard',
+        { ...item.data, name: `${item.data.name} copy`, x, y: 0, html: demoteMastersInHtml(item.html) }, 'Paste frame',
       );
       if (created) {
         pasted.push({ artboardId: created.id, path: [] });
@@ -213,7 +213,7 @@ async function insertImageFile(file, point) {
 
 export function insertIcon(name, svgMarkup) {
   const target = insertionTarget();
-  if (!target) return toast('Pilih frame, elemen, atau artboard tujuan dulu');
+  if (!target) return toast('Pilih frame atau elemen tujuan dulu');
   const doc = target.parent.ownerDocument;
   const [svg] = parseNodes(doc, svgMarkup);
   if (!svg) return;

@@ -63,7 +63,7 @@ export function countInstances(id) {
 // Ctrl+Alt+K: jadikan elemen terpilih sebagai komponen (master).
 export function createComponent() {
   const refs = state.selected.filter((r) => r.path.length);
-  if (!refs.length) return toast('Pilih elemen (bukan artboard) untuk dijadikan komponen');
+  if (!refs.length) return toast('Pilih elemen di dalam frame (bukan frame utama) untuk dijadikan komponen');
   for (const ref of refs) {
     const el = resolve(ref);
     if (!el) continue;
@@ -82,7 +82,7 @@ export function insertInstance(id) {
   const master = findMaster(id);
   if (!master) return toast('Master komponen tidak ditemukan');
   const target = insertionTarget();
-  if (!target) return toast('Pilih frame, elemen, atau artboard tujuan dulu');
+  if (!target) return toast('Pilih frame atau elemen tujuan dulu');
   const doc = target.parent.ownerDocument;
   const instance = demoteMasters(doc.importNode(master.el, true));
   stripIds(instance);

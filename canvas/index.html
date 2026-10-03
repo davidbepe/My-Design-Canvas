@@ -49,7 +49,7 @@
       </div>
       <div class="toolbar-group">
         <span id="status" title="Koneksi ke server"></span>
-        <button id="code-btn" class="text-btn" title="Lihat kode elemen/artboard terpilih">&lt;/&gt;</button>
+        <button id="code-btn" class="text-btn" title="Lihat kode elemen/frame terpilih">&lt;/&gt;</button>
         <button id="preview-btn" class="tool" title="Preview responsif">
           <svg viewBox="0 0 16 16"><rect x="1.5" y="3" width="9" height="7" rx="1" /><rect x="11.5" y="5" width="3" height="7" rx="0.8" /><path d="M4 13h4" /></svg>
         </button>
@@ -88,8 +88,8 @@
         <div id="world"></div>
         <div id="overlay"></div>
         <div id="empty" hidden>
-          <p>Belum ada artboard.</p>
-          <p class="hint">Minta Claude: “buat artboard mobile 390×844 untuk halaman login”</p>
+          <p>Belum ada frame.</p>
+          <p class="hint">Minta Claude: “buat frame mobile 390×844 untuk halaman login”</p>
         </div>
       </section>
       <div id="toast" hidden></div>
@@ -129,7 +129,9 @@
           <dt>Pixel grid (zoom 400%+)</dt><dd>Shift + '</dd>
           <dt>Jadikan komponen</dt><dd>Ctrl + Alt + K</dd>
           <dt>Auto layout / bungkus</dt><dd>Shift + A</dd>
-          <dt>Group / Ungroup</dt><dd>Ctrl + G / Ctrl + Shift + G</dd>
+          <dt>Hapus flex layout</dt><dd>Shift + Alt + A</dd>
+          <dt>Balik horizontal / vertikal</dt><dd>Shift + H / Shift + V</dd>
+          <dt>Group / Ungroup (juga lepas frame)</dt><dd>Ctrl + G / Ctrl + Shift + G</dd>
           <dt>Rata kiri / tengah / kanan</dt><dd>Alt + A / H / D</dd>
           <dt>Rata atas / tengah / bawah</dt><dd>Alt + W / V / S</dd>
           <dt>Jarak sama horizontal / vertikal</dt><dd>Alt + Shift + H / V</dd>
@@ -140,10 +142,10 @@
           <dt>Duplikat</dt><dd>Ctrl + D</dd>
           <dt>Hapus</dt><dd>Delete</dd>
           <dt>Edit teks</dt><dd>Double-click · Enter</dd>
-          <dt>Ganti nama artboard</dt><dd>Double-click nama</dd>
+          <dt>Ganti nama layer</dt><dd>Double-click di Layers / nama frame</dd>
           <dt>Pilih anak</dt><dd>Enter</dd>
           <dt>Pilih induk</dt><dd>Esc · Shift + Enter</dd>
-          <dt>Geser artboard</dt><dd>Drag nama / drag artboard terpilih</dd>
+          <dt>Geser frame utama</dt><dd>Drag nama / drag frame terpilih</dd>
         </dl>
       </div>
     </div>

@@ -112,6 +112,25 @@ Field angka: ketik angka (otomatis px) atau nilai CSS seperti `auto` / `50%`. Bi
 
 **Undo** mencakup semua aksi, termasuk perubahan dari Claude. Riwayat undo hilang kalau halaman di-refresh.
 
+## Extension Chrome: tangkap halaman web
+Folder `extension/` berisi extension **Design Canvas Capture** (mirip "Import Web" di pen.dev): tangkap bagian halaman web mana pun, lalu tempel atau kirim ke kanvas.
+
+**Memasang (sekali saja):**
+1. Buka `chrome://extensions` (Edge: `edge://extensions`).
+2. Nyalakan **Developer mode** (pojok kanan atas).
+3. Klik **Load unpacked**, lalu pilih folder `extension` di proyek ini.
+4. Sematkan ikonnya di toolbar Chrome (ikon puzzle → pin).
+
+**Memakai:**
+- Klik ikon extension, lalu **Pilih elemen** (atau shortcut **Alt+Shift+D**). Arahkan mouse ke bagian yang mau ditangkap, tekan **↑** untuk memilih induknya, lalu klik. **Esc** membatalkan.
+- Atau **Seluruh halaman**.
+- Hasilnya:
+  - **Salin** (bawaan): pilih frame di Design Canvas, lalu tekan **Ctrl+V**.
+  - **Kirim sebagai frame baru**: langsung muncul sebagai frame utama di kanvas (kanvas harus sedang jalan).
+
+**Yang ikut:** gaya hasil hitungan browser (warna, font, ukuran, jarak, radius, shadow, flex/grid), gambar (alamat lengkap), ikon SVG, isi form, `::before`/`::after`, dan font web situs kalau situsnya mengizinkan. Script, class, dan id situs dibuang.
+**Batasan:** ukuran elemen ikut tertulis dalam px (seperti html.to.design), animasi & interaksi tidak ikut, dan halaman `chrome://` atau Web Store tidak bisa ditangkap.
+
 ## Shortcut
 Tekan **?** di editor untuk melihat daftar ini.
 

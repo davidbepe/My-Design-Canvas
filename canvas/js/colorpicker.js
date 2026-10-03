@@ -1,6 +1,8 @@
 // Color picker ala Figma: kotak saturasi/kecerahan, slider hue & opacity, pipet, Hex/RGB/HSL,
 // dan daftar variabel warna. Menggantikan pemilih warna bawaan browser.
 import { data as varData, groupOf } from './tokens.js';
+import { gradientCss } from './effects.js';
+import { setGradientHandles, redrawGradientHandles, isGradientHandle } from './gradhandles.js';
 
 let popup = null;
 let state = null; // { h, s, v, a, onInput, onClose, onToken, start }
@@ -78,11 +80,19 @@ function cssValue() {
 
 // ---------- Buka / tutup ----------
 
-// options: { value, onInput(css) dipanggil setiap perubahan, onClose(css, changed), onToken(varCss) }
-export function openColorPicker(anchor, { value, onInput, onClose, onToken }) {
+// options: { value, onInput(css) dipanggil setiap perubahan, onClose(css, changed), onToken(varCss), fill }
+// fill (opsional, untuk Fill elemen) = tab Solid / Linear / Radial seperti Figma/pen.dev:
+//   { kind: 'solid'|'linear'|'radial', gradient: { kind, angle, shape, stops: [{ color, pos }] } | null,
+//     onKind(kind, colorCss) -> model gradient baru (atau null untuk solid), onGradient(model) }
+export function openColorPicker(anchor, { value, onInput, onClose, onToken, fill }) {
   closeColorPicker();
   const rgba = parseCss(value);
   state = { ...rgbToHsv(rgba), a: rgba.a, onInput, onClose, onToken, start: value, format: state?.format ?? 'hex' };
+  if (fill) {
+    state.fill = { ...fill, g: fill.gradient ? structuredClone(fill.gradient) : null, sel: 0 };
+    if (state.fill.g) selectStop(0);
+  }
+  attachHandles();
   popup = build();
   document.body.append(popup);
   const r = anchor.getBoundingClientRect();
@@ -105,12 +115,25 @@ export function closeColorPicker() {
   popup = null;
   removeEventListener('pointerdown', outside, true);
   removeEventListener('keydown', onEsc, true);
+  setGradientHandles(null);
   if (final !== start) rememberColor(final);
   onClose?.(final, final !== start);
 }
 
 function outside(e) {
-  if (!popup?.contains(e.target)) closeColorPicker();
+  // Kontrol gradient di kanvas bagian dari picker: mengkliknya tidak menutup picker.
+  if (!popup?.contains(e.target) && !isGradientHandle(e.target)) closeColorPicker();
+}
+
+// Kontrol gradient langsung di kanvas (gradhandles.js), selama picker dalam mode gradient.
+function attachHandles() {
+  const f = state.fill;
+  setGradientHandles(f?.g && f.ref ? {
+    ref: f.ref,
+    fill: f,
+    onChange: () => { f.onGradient(f.g); els.gradRefresh?.(); },
+    onSelect: (i) => { selectStop(i); render(); els.gradRefresh?.(); },
+  } : null);
 }
 
 function onEsc(e) {
@@ -119,7 +142,41 @@ function onEsc(e) {
 
 function changed() {
   render();
-  state.onInput?.(cssValue());
+  const f = state.fill;
+  if (f?.g) {
+    // Mode gradient: warna yang dipilih = warna titik gradient yang aktif.
+    f.g.stops[f.sel].color = cssValue();
+    els.gradRefresh?.();
+    f.onGradient(f.g);
+    redrawGradientHandles();
+  } else {
+    state.onInput?.(cssValue());
+  }
+}
+
+function selectStop(i) {
+  const f = state.fill;
+  f.sel = i;
+  const rgba = parseCss(f.g.stops[i].color);
+  Object.assign(state, rgbToHsv(rgba), { a: rgba.a });
+}
+
+// Ganti tab Solid / Linear / Radial: elemen diubah oleh pemanggil, picker dibangun ulang di tempat.
+function switchKind(kind) {
+  const f = state.fill;
+  if (f.kind === kind) return;
+  const color = cssValue();
+  f.kind = kind;
+  f.g = f.onKind(kind, color);
+  f.sel = 0;
+  if (f.g) selectStop(0);
+  const { left, top } = popup.style;
+  const next = build();
+  Object.assign(next.style, { left, top });
+  popup.replaceWith(next);
+  popup = next;
+  render();
+  attachHandles();
 }
 
 // Satu pilihan warna selesai (lepas drag, ketik nilai, pipet): catat ke "Warna terakhir" saat itu juga.
@@ -133,11 +190,22 @@ function picked() {
 let els = {};
 
 function build() {
+  els = {};
   const root = el('div', 'cp');
   root.addEventListener('pointerdown', (e) => e.stopPropagation());
 
   const head = el('div', 'cp-head');
-  head.append(el('span', '', 'Warna'));
+  if (state.fill) {
+    const tabs = el('div', 'cp-tabs');
+    for (const [kind, label] of [['solid', 'Solid'], ['linear', 'Linear'], ['radial', 'Radial']]) {
+      const tab = el('button', `cp-tab${state.fill.kind === kind ? ' on' : ''}`, label);
+      tab.addEventListener('click', () => switchKind(kind));
+      tabs.append(tab);
+    }
+    head.append(tabs);
+  } else {
+    head.append(el('span', '', 'Warna'));
+  }
   const close = el('button', 'icon-text-btn', '×');
   close.addEventListener('click', closeColorPicker);
   head.append(close);
@@ -191,7 +259,9 @@ function build() {
   });
   values.append(format, inputs, opacity);
 
-  root.append(head, sv, tools, values);
+  root.append(head);
+  if (state.fill?.g) root.append(buildGradient());
+  root.append(sv, tools, values);
 
   // Warna terakhir yang dipakai (selalu tampil; diperbarui setiap kali warna selesai dipilih)
   const recentSection = el('div', 'cp-tokens');
@@ -202,7 +272,7 @@ function build() {
 
   // Variabel warna (design system)
   const colorTokens = Object.keys(varData.tokens).filter((n) => varData.groups.find((g) => g.id === groupOf(n))?.type === 'color');
-  if (colorTokens.length && state.onToken) {
+  if (colorTokens.length && state.onToken && !state.fill?.g) {
     const section = el('div', 'cp-tokens');
     section.append(el('div', 'cp-label', 'Variabel warna'));
     const grid = el('div', 'cp-token-grid');
@@ -222,9 +292,112 @@ function build() {
     root.append(section);
   }
 
-  els = { sv, svThumb, hueThumb, alphaFill, alphaThumb, inputs, opacity, recentGrid };
+  els = { ...els, sv, svThumb, hueThumb, alphaFill, alphaThumb, inputs, opacity, recentGrid };
   renderRecent();
   return root;
+}
+
+// Editor gradient di dalam picker: bar titik warna (klik titik = pilih, drag = geser, klik bar = tambah),
+// posisi titik, sudut (linear), dan hapus titik.
+function buildGradient() {
+  const f = state.fill;
+  const g = f.g;
+  const wrap = el('div', 'cp-grad');
+  const bar = el('div', 'cp-grad-bar');
+  const preview = el('div', 'cp-grad-preview');
+  bar.append(preview);
+  const controls = el('div', 'cp-grad-controls');
+  wrap.append(bar, controls);
+
+  const pct = (e) => Math.round(Math.min(100, Math.max(0, ((e.clientX - bar.getBoundingClientRect().left) / bar.getBoundingClientRect().width) * 100)));
+  let markers = [];
+  function draw() {
+    redrawGradientHandles();
+    preview.style.background = gradientCss({ ...g, kind: 'linear', angle: 90 });
+    markers.forEach((m) => m.remove());
+    markers = g.stops.map((stop, i) => {
+      const m = el('div', `cp-grad-stop${i === f.sel ? ' on' : ''}`);
+      m.style.left = `${stop.pos}%`;
+      m.style.setProperty('--sw', stop.color);
+      m.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        selectStop(i);
+        render();
+        draw();
+        drawControls();
+        // Gerakan didengarkan di window: titik-titiknya digambar ulang setiap gerakan, jadi elemen
+        // yang ditekan tadi sudah tidak ada lagi.
+        const move = (ev) => {
+          stop.pos = pct(ev);
+          draw();
+          drawControls();
+          f.onGradient(g);
+        };
+        const up = () => {
+          removeEventListener('pointermove', move);
+          removeEventListener('pointerup', up);
+          removeEventListener('pointercancel', up);
+        };
+        addEventListener('pointermove', move);
+        addEventListener('pointerup', up);
+        addEventListener('pointercancel', up);
+      });
+      bar.append(m);
+      return m;
+    });
+  }
+  // Klik bar = tambah titik di posisi itu, warnanya diambil dari titik terdekat.
+  bar.addEventListener('pointerdown', (e) => {
+    const pos = pct(e);
+    const nearest = [...g.stops].sort((a, b) => Math.abs(a.pos - pos) - Math.abs(b.pos - pos))[0];
+    g.stops.push({ color: nearest.color, pos });
+    selectStop(g.stops.length - 1);
+    render();
+    draw();
+    drawControls();
+    f.onGradient(g);
+  });
+  function drawControls() {
+    controls.replaceChildren();
+    const posInput = el('input', 'cp-input cp-grad-pos');
+    posInput.value = `${Math.round(g.stops[f.sel].pos)}%`;
+    posInput.title = 'Posisi titik warna (%)';
+    posInput.addEventListener('change', () => {
+      const n = parseFloat(posInput.value);
+      if (Number.isFinite(n)) { g.stops[f.sel].pos = Math.min(100, Math.max(0, n)); draw(); f.onGradient(g); }
+      drawControls();
+    });
+    controls.append(posInput);
+    if (g.kind === 'linear') {
+      const angle = el('input', 'cp-input cp-grad-angle');
+      angle.value = `${Math.round(g.angle)}°`;
+      angle.title = 'Sudut gradient';
+      angle.addEventListener('change', () => {
+        const n = parseFloat(angle.value);
+        if (Number.isFinite(n)) { g.angle = n; f.onGradient(g); redrawGradientHandles(); }
+        drawControls();
+      });
+      controls.append(angle);
+    }
+    if (g.stops.length > 2) {
+      const remove = el('button', 'icon-text-btn', '−');
+      remove.title = 'Hapus titik warna ini';
+      remove.addEventListener('click', () => {
+        g.stops.splice(f.sel, 1);
+        selectStop(0);
+        render();
+        draw();
+        drawControls();
+        f.onGradient(g);
+      });
+      controls.append(remove);
+    }
+  }
+  els.gradRefresh = () => { draw(); drawControls(); };
+  draw();
+  drawControls();
+  return wrap;
 }
 
 function renderRecent() {

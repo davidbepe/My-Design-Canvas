@@ -27,7 +27,7 @@ export async function renderVersionsPanel(container) {
   const list = document.createElement('div');
   const note = document.createElement('p');
   note.className = 'side-note';
-  note.textContent = 'Versi menyimpan semua artboard dan design tokens. Berbeda dengan undo, versi tetap ada walaupun browser ditutup.';
+  note.textContent = 'Versi menyimpan semua frame dan design tokens. Berbeda dengan undo, versi tetap ada walaupun browser ditutup.';
   container.replaceChildren(form, note, list);
 
   const data = await request('/api/versions', 'GET');
@@ -49,7 +49,7 @@ function versionRow(v, container) {
   name.textContent = v.name;
   const meta = document.createElement('span');
   meta.className = 'comp-meta';
-  meta.textContent = `${relativeTime(v.createdAt)} · ${v.artboards.length} artboard`;
+  meta.textContent = `${relativeTime(v.createdAt)} · ${v.artboards.length} frame`;
   meta.title = new Date(v.createdAt).toLocaleString('id-ID');
   info.append(name, meta);
 

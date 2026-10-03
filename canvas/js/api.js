@@ -36,7 +36,7 @@ async function request(url, method, body) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    toast('Server terputus: perubahan artboard ini belum tersimpan');
+    toast('Server terputus: perubahan frame ini belum tersimpan');
     return null;
   }
   if (!res.ok) {

@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Design Canvas Capture",
+  "version": "0.1.0",
+  "description": "Tangkap bagian halaman web (atau seluruh halaman) lalu tempel atau kirim ke Design Canvas, seperti Import Web di pen.dev.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Design Canvas Capture" },
+  "commands": {
+    "pick-element": {
+      "suggested_key": { "default": "Alt+Shift+D" },
+      "description": "Pilih elemen untuk ditangkap"
+    }
+  }
+}

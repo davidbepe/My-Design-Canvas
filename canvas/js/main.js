@@ -6,7 +6,7 @@ import { initCamera, fitAll, fitRect, zoomCenter, restoreView, updateCursor } fr
 import { initArtboards, renderArtboards, reloadArtboard, syncArtboardCorners } from './artboards.js';
 import { initSelection, drawOverlay, describeSelection, rectOf } from './selection.js';
 import { initLayers, renderLayers, highlightLayers } from './layers.js';
-import { initProperties, renderProperties } from './properties.js';
+import { initProperties, renderProperties, flipSelection } from './properties.js';
 import { scheduleSave, retryFailed, hasUnsaved } from './persist.js';
 import { undo, redo, canUndo, canRedo } from './history.js';
 import { duplicateSelection, deleteSelection, selectAll } from './actions.js';
@@ -19,14 +19,16 @@ import { renderVersionsPanel } from './versions.js';
 import { initPreview, openPreview, closePreview, isPreviewOpen } from './preview.js';
 import { initCodeExport, openCode, closeCode, isCodeOpen } from './codeexport.js';
 import { initGuides } from './guides.js';
-import { autoLayoutShortcut } from './autolayout.js';
+import { autoLayoutShortcut, removeAutoLayout } from './autolayout.js';
 import { initVector, isDrawingVector, cancelVector } from './vector.js';
 import { initVectorEdit } from './vectoredit.js';
 import { initToolMenus } from './toolmenus.js';
 import { groupSelection, ungroupSelection } from './group.js';
 import { alignSelection, distributeSelection } from './align.js';
 import { initCanvasColor } from './canvasbg.js';
-import { initPixelGrid, updatePixelGrid, isPixelGridOn, setPixelGrid } from './pixelgrid.js';
+import { initPixelGrid, updatePixelGrid, isPixelGridOn, setPixelGrid, PIXEL_GRID_MIN_ZOOM } from './pixelgrid.js';
+import { syncHug } from './hug.js';
+import { initGradientHandles, redrawGradientHandles } from './gradhandles.js';
 import {
   renderVariablesPanel, isVariablesOpen, closeVariablesTable, refreshVariablesTable,
 } from './variables.js';
@@ -48,6 +50,11 @@ initGuides($('overlay'));
 initVector($('overlay'));
 initVectorEdit($('overlay'));
 initPixelGrid($('overlay'));
+initGradientHandles($('overlay'));
+// Kontrol gradient di kanvas ikut bergeser saat kanvas di-zoom/pan atau elemennya berubah.
+on('view', redrawGradientHandles);
+on('layout', redrawGradientHandles);
+on('edit', redrawGradientHandles);
 initToolMenus();
 initLayers($('layers'));
 initProperties($('props'));
@@ -154,7 +161,11 @@ addEventListener('keydown', (e) => {
   else if (mod && key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
   else if (mod && ((key === 'z' && e.shiftKey) || key === 'y')) { e.preventDefault(); redo(); }
   else if (mod && key === 'd') { e.preventDefault(); duplicateSelection(); }
-  else if (mod && key === 'g') { e.preventDefault(); (e.shiftKey ? ungroupSelection : groupSelection)(); }
+  else if (e.altKey && !mod && e.shiftKey && e.code === 'KeyA') {
+    e.preventDefault();
+    const refs = state.selected;
+    if (refs.length) removeAutoLayout(refs);
+  } else if (mod && key === 'g') { e.preventDefault(); (e.shiftKey ? ungroupSelection : groupSelection)(); }
   else if (e.altKey && !mod && e.shiftKey && (e.code === 'KeyH' || e.code === 'KeyV')) {
     e.preventDefault();
     distributeSelection(e.code === 'KeyH' ? 'h' : 'v');
@@ -163,6 +174,7 @@ addEventListener('keydown', (e) => {
   else if (mod || e.altKey) return;
   else if (key === 'delete' || key === 'backspace') { e.preventDefault(); deleteSelection(); }
   else if (key === 'a' && e.shiftKey) autoLayoutShortcut();
+  else if (e.shiftKey && (key === 'h' || key === 'v')) flipSelection(key === 'h' ? 'x' : 'y');
   else if (key === 'v') setTool('select');
   else if (key === 'h') setTool('hand');
   else if (key === 'f') setTool('frame');
@@ -184,8 +196,15 @@ addEventListener('keydown', (e) => {
 });
 
 // ---------- Reaksi terhadap perubahan ----------
+let gridVisible = null;
 on('view', () => {
   updatePixelGrid();
+  // Panel Kanvas menampilkan status pixel grid: perbarui saat zoom melewati batas 400%.
+  const visible = state.view.zoom >= PIXEL_GRID_MIN_ZOOM;
+  if (visible !== gridVisible) {
+    gridVisible = visible;
+    if (!state.selection) renderProperties();
+  }
   zoomBtn.textContent = `${Math.round(state.view.zoom * 100)}%`;
   drawOverlay();
 });
@@ -201,6 +220,7 @@ on('artboards', () => {
 
 // Isi artboard selesai dimuat (pertama kali, setelah Claude mengubahnya, atau setelah undo).
 on('doc', (id) => {
+  scheduleHug(id);
   applyFontImports(docOf(id)); // undo mengganti isi dokumen, jadi pasang lagi link font sementara
   syncArtboardCorners(id);
   if (state.selected.some((r) => r.artboardId === id)) {
@@ -231,7 +251,19 @@ on('hover', () => {
   drawOverlay();
 });
 
+// Ikon & nama di panel Layers bisa berubah karena editan gaya (mis. auto layout dinyalakan atau
+// arahnya diganti). Digambar ulang sebentar setelah editan berhenti, supaya drag tetap ringan.
+let layersTimer;
+const hugTimers = new Map();
+// Frame utama yang memakai Hug: ukurannya disesuaikan lagi setelah isinya berubah.
+function scheduleHug(id) {
+  clearTimeout(hugTimers.get(id));
+  hugTimers.set(id, setTimeout(() => { hugTimers.delete(id); syncHug(id); }, 200));
+}
 on('edit', (id) => {
+  clearTimeout(layersTimer);
+  layersTimer = setTimeout(() => renderLayers(), 150);
+  scheduleHug(id);
   scheduleSave(id);
   syncArtboardCorners(id); // radius artboard langsung terlihat di kanvas
   drawOverlay();
@@ -240,6 +272,7 @@ on('edit', (id) => {
 
 on('structure', (id) => {
   scheduleSave(id);
+  scheduleHug(id);
   if (!connected) updateOffline();
   renderLayers();
   drawOverlay();

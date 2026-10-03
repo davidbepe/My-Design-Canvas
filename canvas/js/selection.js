@@ -1,22 +1,22 @@
 // Interaksi mouse di kanvas: hover, klik untuk memilih, drag & resize artboard, double-click untuk edit.
 // Juga menggambar garis biru seleksi dan handle resize.
 import {
-  state, emit, setHover, setSelection, getArtboard, docOf, resolve, pathOf, sameRef, visibleChildren,
-  isEditableTarget, setTool, isSelected, toggleSelection, DRAW_TOOLS, VECTOR_TOOLS, COMPONENT_ROLE,
+  state, emit, setHover, setSelection, setSelectionList, getArtboard, docOf, resolve, pathOf, sameRef, visibleChildren,
+  isEditableTarget, setTool, isSelected, toggleSelection, DRAW_TOOLS, VECTOR_TOOLS, COMPONENT_ROLE, CONTAINER_TAGS,
 } from './state.js';
 import { toLocal, screenToWorld, worldToScreen, wantsPan, isPanning } from './camera.js';
 import { layoutArtboards } from './artboards.js';
-import { changeArtboard } from './actions.js';
-import { group, captureDoc, snapshot, pushDoc } from './history.js';
+import { changeArtboard, deleteArtboard, frameFromArtboard } from './actions.js';
+import { group, captureDoc, snapshot, pushDoc, recordDoc } from './history.js';
 import { isTextLeaf, startTextEdit, finishTextEdit, isEditingText, startRename } from './textedit.js';
-import { finishDraw, containerRefAt, artboardAt } from './draw.js';
+import { finishDraw, containerRefAt, artboardAt, containerAt, isAutoLayoutBox, placeFreeAt } from './draw.js';
 import {
   snapRect, snapMove, artboardBoxes, showGuidesFor, clearGuides, drawGuides,
 } from './guides.js';
 import {
   vectorDown, vectorMove, vectorUp, vectorDoubleClick, isDrawingVector, redrawVector,
 } from './vector.js';
-import { isFree, freePosition, rotationOf } from './position.js';
+import { isFree, freePosition, rotationOf, makeFlow } from './position.js';
 import { isGroup, isMovableGroup, freeLeaves, boxOf } from './group.js';
 import {
   isEditingVector, canEditVector, startVectorEdit, stopVectorEdit, vectorEditDown, vectorEditMove, vectorEditUp,
@@ -221,6 +221,8 @@ function onMove(e) {
       const items = (isGroup(el) ? freeLeaves(el) : [el]).map((t) => ({ el: t, pos: freePosition(t) }));
       Object.assign(gesture, {
         kind: 'moveEl', ref, items, startRect: rectOf(ref), boxes: siblingBoxes(el, ref),
+        // Hanya elemen tunggal (bukan group) yang bisa dimasukkan ke frame lain.
+        nestEl: isGroup(el) ? null : el, a: getArtboard(ref.artboardId),
       });
     } else {
       gesture.kind = 'move';
@@ -237,6 +239,12 @@ function onMove(e) {
     for (const { el, pos } of items) {
       el.style.left = `${Math.round(pos.left + dx + snap.dx)}px`;
       el.style.top = `${Math.round(pos.top + dy + snap.dy)}px`;
+    }
+    if (gesture.nestEl) {
+      // Abaikan elemen yang di-drag saat mencari frame di bawah kursor (dipulihkan saat dilepas).
+      if (!('pe' in gesture)) { gesture.pe = gesture.nestEl.style.pointerEvents; gesture.nestEl.style.pointerEvents = 'none'; }
+      gesture.target = dropTarget(gesture.nestEl, pointIn(gesture.a, e));
+      setHover(gesture.target ? refOfEl(gesture.target, ref.artboardId) : null);
     }
     showGuidesFor(rectOf(ref), boxes);
     emit('edit', ref.artboardId);
@@ -275,6 +283,17 @@ function onMove(e) {
     }
     showGuidesFor({ ...bbox, x: bbox.x + Math.round(snap.dx), y: bbox.y + Math.round(snap.dy) }, boxes);
     layoutArtboards();
+    // Satu artboard di atas artboard lain: tandai frame tujuan (dilepas = dimasukkan ke sana).
+    gesture.nest = null;
+    if (gesture.group.length === 1) {
+      const { sx, sy } = toLocal(e);
+      const p = screenToWorld(sx, sy);
+      const target = [...state.artboards].reverse().find((b) => !ids.has(b.id)
+        && p.x >= b.x && p.y >= b.y && p.x <= b.x + b.width && p.y <= b.y + b.height);
+      const el = target && containerAt(target, p.x, p.y);
+      if (el) gesture.nest = { artboardId: target.id, el, pt: p };
+    }
+    setHover(gesture.nest ? refOfEl(gesture.nest.el, gesture.nest.artboardId) : null);
     return;
   }
 
@@ -317,9 +336,20 @@ function onUp(e) {
   if (!g) return;
   if (g.kind === 'vector') return vectorUp();
   if (g.kind === 'vectorEdit') return vectorEditUp();
-  if (g.kind === 'reorder') return finishReorder(g);
+  if (g.kind === 'reorder') return finishReorder(g, e);
   clearGuides();
   drawOverlay();
+  if (g.kind === 'moveEl' && g.nestEl && 'pe' in g) {
+    const el = g.nestEl;
+    if (g.pe) el.style.pointerEvents = g.pe; else el.style.removeProperty('pointer-events');
+    setHover(null);
+    if (g.target) {
+      // Masukkan ke frame tujuan (perubahan ikut langkah undo "Pindah elemen" yang sama).
+      captureDoc(g.ref.artboardId, 'Masukkan ke frame');
+      nestInto(el, g.target, pointIn(g.a, e), el.getBoundingClientRect());
+      setSelection({ artboardId: g.ref.artboardId, path: pathOf(el) });
+    }
+  }
   if (g.kind === 'moveEl' || g.kind === 'rotate') {
     emit('structure', g.ref.artboardId); // perbarui X/Y / rotasi di panel kanan
     return;
@@ -335,11 +365,16 @@ function onUp(e) {
     else setSelection(g.hit);
     return;
   }
+  if (g.kind === 'move' && g.nest) {
+    setHover(null);
+    nestArtboard(g);
+    return;
+  }
   if (g.kind === 'move') {
-    group('Pindah artboard', () => {
+    group('Pindah frame', () => {
       for (const { id, from } of g.group) {
         const b = getArtboard(id);
-        if (b) changeArtboard(id, { x: b.x, y: b.y }, 'Pindah artboard', from);
+        if (b) changeArtboard(id, { x: b.x, y: b.y }, 'Pindah frame', from);
       }
     });
     emit('artboards');
@@ -350,7 +385,7 @@ function onUp(e) {
   const keys = ['x', 'y', 'width', 'height'];
   const before = Object.fromEntries(keys.map((k) => [k, g.from[k]]));
   const after = Object.fromEntries(keys.map((k) => [k, a[k]]));
-  changeArtboard(a.id, after, 'Ubah ukuran artboard', before);
+  changeArtboard(a.id, after, 'Ubah ukuran frame', before);
   emit('artboards');
 }
 
@@ -461,16 +496,73 @@ function scopedTarget(target, deep) {
   return el.parentElement === scope ? el : target;
 }
 
-// ---------- Drag untuk mengubah urutan di auto layout ----------
-// Seperti Figma/pen.dev: elemen terangkat mengikuti kursor, saudara-saudaranya otomatis bergeser
-// memberi tempat, dan urutannya berubah saat dilepas. Selama drag hanya gaya sementara yang dipakai.
+// ---------- Drag elemen: ubah urutan & masukkan ke frame lain ----------
+// Seperti Figma/pen.dev: elemen terangkat mengikuti kursor.
+// - Di dalam auto layout: saudara-saudaranya bergeser memberi tempat, urutan berubah saat dilepas.
+// - Di atas frame lain (ditandai garis biru): elemen dimasukkan ke frame itu saat dilepas.
+//   Di auto layout, tepi saudara = ubah urutan, bagian tengahnya = masukkan ke dalamnya.
+// Selama drag hanya gaya sementara yang dipakai.
 
 function reorderable(el) {
-  const parent = el.parentElement;
-  if (!parent || el.tagName === 'BODY' || isFree(el)) return false;
-  const display = el.ownerDocument.defaultView.getComputedStyle(parent).display;
-  return /flex|grid/.test(display) && visibleChildren(parent).length > 1;
+  return !!el.parentElement && el.tagName !== 'BODY' && !isFree(el) && !isGroup(el.parentElement);
 }
+
+// Frame tujuan di bawah kursor, atau null kalau elemen tetap di induknya.
+function dropTarget(el, pt) {
+  const doc = el.ownerDocument;
+  const parent = el.parentElement;
+  if (!parent || isGroup(parent)) return null;
+  let c = doc.elementFromPoint(pt.x, pt.y);
+  // Naik ke wadah terdekat; instance komponen & group bukan tujuan (isinya diatur master / tanpa kotak).
+  while (c && c !== doc.body && (!CONTAINER_TAGS.has(c.tagName) || isGroup(c) || c.closest(`[${COMPONENT_ROLE}="instance"]`))) {
+    c = c.parentElement;
+  }
+  c = c ?? doc.body;
+  if (c === parent || el.contains(c)) return null;
+  if (isAutoLayoutBox(parent) && parent.contains(c)) {
+    // Saudara di auto layout: hanya bagian tengahnya yang berarti "masukkan ke dalam".
+    const r = c.getBoundingClientRect();
+    const ix = r.width * 0.3;
+    const iy = r.height * 0.3;
+    if (pt.x < r.left + ix || pt.x > r.right - ix || pt.y < r.top + iy || pt.y > r.bottom - iy) return null;
+  }
+  return c;
+}
+
+// Masukkan el ke wadah c. rect = posisi el di layar saat dilepas (koordinat artboard).
+function nestInto(el, c, pt, rect) {
+  if (isAutoLayoutBox(c)) {
+    makeFlow(el);
+    el.style.removeProperty('margin');
+    const sibs = visibleChildren(c).filter((x) => x !== el);
+    const index = insertionIndex(c, sibs, pt);
+    if (index < sibs.length) c.insertBefore(el, sibs[index]);
+    else c.append(el);
+  } else {
+    // Frame biasa: tetap di tempat dilepas (posisi Bebas), ukurannya dikunci.
+    if (!el.style.width) el.style.width = `${round2(rect.width)}px`;
+    if (!el.style.height) el.style.height = `${round2(rect.height)}px`;
+    c.append(el);
+    placeFreeAt(el, { left: rect.left, top: rect.top });
+  }
+}
+
+// Posisi sisip di antara saudara (urutan baca), mengikuti arah layout wadahnya.
+function insertionIndex(container, sibs, pt) {
+  const pcs = container.ownerDocument.defaultView.getComputedStyle(container);
+  const flowsInRows = pcs.display.includes('grid') || pcs.flexDirection.startsWith('row');
+  const reverse = pcs.flexDirection.endsWith('reverse');
+  for (const [i, sib] of sibs.entries()) {
+    const r = sib.getBoundingClientRect();
+    const before = flowsInRows
+      ? pt.y < r.top || (pt.y < r.bottom && (reverse ? pt.x > r.left + r.width / 2 : pt.x < r.left + r.width / 2))
+      : (reverse ? pt.y > r.top + r.height / 2 : pt.y < r.top + r.height / 2);
+    if (before) return i;
+  }
+  return sibs.length;
+}
+
+const refOfEl = (el, artboardId) => ({ artboardId, path: el.tagName === 'BODY' ? [] : pathOf(el) ?? [] });
 
 function startReorder(g, e) {
   const ref = g.reorderRef;
@@ -478,41 +570,41 @@ function startReorder(g, e) {
   const a = getArtboard(ref.artboardId);
   if (!isSelected(ref)) setSelection(ref);
   const cs = el.ownerDocument.defaultView.getComputedStyle(el);
-  const pt = pointIn(a, e);
+  // Titik pegang dihitung dari posisi saat mouse DITEKAN, bukan saat drag mulai terdeteksi
+  // (beberapa px kemudian), supaya elemen tidak tertinggal dari kursor.
+  const pt = pointIn(a, { clientX: g.px, clientY: g.py });
   const r = el.getBoundingClientRect();
   Object.assign(g, {
     kind: 'reorder', ref, el, a, parent: el.parentElement,
     before: snapshot(ref.artboardId),
     hadStyle: el.hasAttribute('style'),
-    saved: { translate: el.style.translate, position: el.style.position, 'z-index': el.style.zIndex, opacity: el.style.opacity },
+    saved: {
+      translate: el.style.translate, position: el.style.position, 'z-index': el.style.zIndex,
+      opacity: el.style.opacity, 'pointer-events': el.style.pointerEvents,
+    },
     grab: { x: pt.x - r.left, y: pt.y - r.top },
   });
   // Angkat elemen: di atas saudara-saudaranya dan sedikit transparan.
   if (cs.position === 'static') el.style.position = 'relative';
   el.style.zIndex = '1000';
   el.style.opacity = String((Number(cs.opacity) || 1) * 0.85);
+  el.style.pointerEvents = 'none'; // supaya frame di bawah kursor bisa ditemukan
 }
 
 function moveReorder(g, e) {
   const { el, parent, a } = g;
   const pt = pointIn(a, e);
-  const pcs = el.ownerDocument.defaultView.getComputedStyle(parent);
-  const flowsInRows = pcs.display.includes('grid') || pcs.flexDirection.startsWith('row');
-  const reverse = pcs.flexDirection.endsWith('reverse');
+  g.target = dropTarget(el, pt);
+  setHover(g.target ? refOfEl(g.target, g.ref.artboardId) : null);
   const sibs = visibleChildren(parent).filter((c) => c !== el);
-  // Elemen disisipkan sebelum saudara pertama yang "sesudah" posisi kursor (urutan baca).
-  let index = sibs.length;
-  for (const [i, sib] of sibs.entries()) {
-    const r = sib.getBoundingClientRect();
-    const before = flowsInRows
-      ? pt.y < r.top || (pt.y < r.bottom && (reverse ? pt.x > r.left + r.width / 2 : pt.x < r.left + r.width / 2))
-      : (reverse ? pt.y > r.top + r.height / 2 : pt.y < r.top + r.height / 2);
-    if (before) { index = i; break; }
-  }
-  if (visibleChildren(parent).indexOf(el) !== index) {
-    if (index < sibs.length) parent.insertBefore(el, sibs[index]);
-    else sibs.at(-1).after(el);
-    setSelection({ artboardId: g.ref.artboardId, path: pathOf(el) });
+  // Ubah urutan langsung (hanya di auto layout, dan selama tidak sedang menuju frame lain).
+  if (!g.target && isAutoLayoutBox(parent) && sibs.length) {
+    const index = insertionIndex(parent, sibs, pt);
+    if (visibleChildren(parent).indexOf(el) !== index) {
+      if (index < sibs.length) parent.insertBefore(el, sibs[index]);
+      else sibs.at(-1).after(el);
+      setSelection({ artboardId: g.ref.artboardId, path: pathOf(el) });
+    }
   }
   // Elemen mengikuti kursor dari tempat barunya.
   el.style.translate = '';
@@ -530,13 +622,54 @@ function endReorder(g) {
   if (!g.hadStyle && !el.getAttribute('style')) el.removeAttribute('style');
 }
 
-function finishReorder(g) {
+function finishReorder(g, e) {
+  const rect = g.el.getBoundingClientRect(); // posisi saat dilepas (termasuk geseran mengikuti kursor)
   endReorder(g);
+  setHover(null);
+  if (g.target) nestInto(g.el, g.target, pointIn(g.a, e), rect);
   const id = g.ref.artboardId;
   const ref = { artboardId: id, path: pathOf(g.el) };
-  pushDoc(id, 'Ubah urutan', g.before, snapshot(id), [g.ref], [ref]);
+  pushDoc(id, g.target ? 'Masukkan ke frame' : 'Ubah urutan', g.before, snapshot(id), [g.ref], [ref]);
   setSelection(ref);
   emit('structure', id);
+}
+
+// ---------- Artboard dimasukkan ke artboard/frame lain ----------
+// Seperti Figma: frame paling luar bisa di-drag ke dalam frame lain. Artboard sumber diubah jadi
+// <div> frame (gaya <body>-nya + ukurannya + isinya), dimasukkan ke tujuan, lalu artboard-nya dihapus.
+// Semua tercatat sebagai satu langkah undo.
+async function nestArtboard(g) {
+  const { id: srcId, from } = g.group[0];
+  const src = getArtboard(srcId);
+  const srcDoc = docOf(srcId);
+  const target = getArtboard(g.nest.artboardId);
+  const doc = docOf(g.nest.artboardId);
+  if (!src || !srcDoc?.body || !target || !doc) return;
+  const dropAt = { x: src.x, y: src.y }; // posisi artboard saat dilepas
+  // Kembalikan posisi artboard sumber, supaya undo memunculkannya lagi di tempat semula.
+  Object.assign(src, { x: from.x, y: from.y });
+  layoutArtboards();
+
+  const frame = frameFromArtboard(srcId, doc);
+
+  const c = g.nest.el;
+  await group('Masukkan ke frame', async () => {
+    recordDoc(target.id, 'Masukkan ke frame', () => {
+      if (isAutoLayoutBox(c)) {
+        const sibs = visibleChildren(c);
+        const index = insertionIndex(c, sibs, { x: g.nest.pt.x - target.x, y: g.nest.pt.y - target.y });
+        if (index < sibs.length) c.insertBefore(frame, sibs[index]);
+        else c.append(frame);
+      } else {
+        c.append(frame);
+        placeFreeAt(frame, { left: dropAt.x - target.x, top: dropAt.y - target.y });
+      }
+      setSelectionList([{ artboardId: target.id, path: pathOf(frame) }]);
+    });
+    emit('structure', target.id);
+    await deleteArtboard(srcId);
+  });
+  setSelection({ artboardId: target.id, path: pathOf(frame) });
 }
 
 // Posisi kursor dalam koordinat artboard (= koordinat di dalam iframe).

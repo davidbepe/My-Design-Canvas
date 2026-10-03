@@ -97,7 +97,7 @@ function finish(closed) {
 
   const start = points[0];
   const artboard = artboardAt(start.x, start.y);
-  if (!artboard) return toast('Gambar vector di dalam artboard');
+  if (!artboard) return toast('Gambar vector di dalam frame');
   const container = containerAt(artboard, start.x, start.y);
   if (!container) return;
 

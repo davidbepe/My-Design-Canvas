@@ -90,7 +90,7 @@ export function startRename(artboardId) {
     nameEl.removeAttribute('contenteditable');
     focusEditor();
     const name = nameEl.textContent.trim();
-    if (save && name && name !== a.name) changeArtboard(artboardId, { name }, 'Ganti nama artboard');
+    if (save && name && name !== a.name) changeArtboard(artboardId, { name }, 'Ganti nama frame');
     else nameEl.textContent = a.name;
   };
   const onKey = (e) => {

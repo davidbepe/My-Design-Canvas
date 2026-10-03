@@ -2,8 +2,10 @@
 // - tambah / hapus auto layout (Shift+A), atau bungkus beberapa elemen ke frame auto layout baru
 // - arah, kotak perataan 3×3, gap (termasuk "Auto" = space-between)
 // - resizing elemen anak: Fixed / Hug / Fill
-import { state, emit, resolve, pathOf, setSelectionList, toast, visibleChildren } from './state.js';
+import { state, emit, resolve, pathOf, setSelectionList, toast, visibleChildren, CONTAINER_TAGS } from './state.js';
 import { recordDoc, group } from './history.js';
+import { isFree, freePosition, makeFlow } from './position.js';
+import { wrapArtboardInAutoLayout } from './actions.js';
 
 const ALIGN_VALUES = { start: 'flex-start', center: 'center', end: 'flex-end' };
 
@@ -11,16 +13,32 @@ export function isAutoLayout(el) {
   return el.ownerDocument.defaultView.getComputedStyle(el).display.includes('flex');
 }
 
-// Shift+A: beberapa elemen sejajar → bungkus; satu elemen/artboard → tambahkan auto layout.
+// Shift+A seperti Figma/pen.dev:
+// - beberapa elemen sejajar → dibungkus bersama ke auto layout baru;
+// - frame biasa → diberi auto layout;
+// - frame yang SUDAH auto layout, atau teks/gambar/shape → dibungkus ke auto layout baru
+//   (jadi bisa membuat auto layout di dalam auto layout).
 export function autoLayoutShortcut() {
   const refs = state.selected;
-  if (!refs.length) return toast('Pilih frame, elemen, atau artboard dulu');
+  if (!refs.length) return toast('Pilih frame atau elemen dulu');
   const elements = refs.filter((r) => r.path.length);
   if (elements.length > 1) return wrapInAutoLayout(elements);
   const ref = state.selection;
   const el = resolve(ref);
-  if (el && isAutoLayout(el)) return toast('Sudah memakai auto layout');
+  if (!el) return;
+  if (!ref.path.length) {
+    // Frame utama yang sudah auto layout: dibungkus frame utama baru (frame lama masuk ke dalamnya).
+    if (isAutoLayout(el)) return wrapArtboardInAutoLayout(ref.artboardId);
+    return addAutoLayout([ref]);
+  }
+  if (isAutoLayout(el) || !isPlainFrame(el)) return wrapInAutoLayout([ref]);
   addAutoLayout([ref]);
+}
+
+// Frame biasa = wadah (div, section, ...) tanpa teks sendiri, bukan instance komponen.
+function isPlainFrame(el) {
+  if (!CONTAINER_TAGS.has(el.tagName) || el.getAttribute('data-component-role') === 'instance') return false;
+  return ![...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
 }
 
 export function addAutoLayout(refs) {
@@ -64,16 +82,29 @@ export function wrapInAutoLayout(refs) {
   }
   const ordered = visibleChildren(parent).filter((c) => els.includes(c));
   const rects = ordered.map((e) => e.getBoundingClientRect());
-  const horizontal = rects.every((r, i) => i === 0 || r.left >= rects[i - 1].right - 1);
+  // Satu elemen: vertikal. Beberapa: ditebak dari susunannya (berjajar ke kanan = horizontal).
+  const horizontal = ordered.length > 1 && rects.every((r, i) => i === 0 || r.left >= rects[i - 1].right - 1);
   const doc = parent.ownerDocument;
   const frame = doc.createElement('div');
   frame.className = 'frame';
-  frame.style.cssText = `display: flex; flex-direction: ${horizontal ? 'row' : 'column'}; gap: 8px; box-sizing: border-box;`;
+  // Hug: seukuran isinya, tidak melebar memenuhi induk.
+  frame.style.cssText = `display: flex; flex-direction: ${horizontal ? 'row' : 'column'}; gap: 8px; box-sizing: border-box; width: fit-content; height: fit-content; flex-shrink: 0;`;
   recordDoc(refs[0].artboardId, 'Bungkus dengan auto layout', () => {
+    // Elemen berposisi Absolute: posisinya pindah ke pembungkus, supaya tidak bergeser di layar.
+    const free = ordered.filter(isFree);
+    if (free.length) {
+      const left = Math.min(...free.map((e) => freePosition(e).left));
+      const top = Math.min(...free.map((e) => freePosition(e).top));
+      Object.assign(frame.style, { position: 'absolute', left: `${left}px`, top: `${top}px` });
+      free.forEach(makeFlow);
+    }
     parent.insertBefore(frame, ordered[0]);
     frame.append(...ordered);
     setSelectionList([{ artboardId: refs[0].artboardId, path: pathOf(frame) }]);
   });
+  // Buka pembungkus dan elemen yang dibungkus di panel Layers.
+  const wrapPath = pathOf(frame);
+  emit('expand-layers', [wrapPath, ...ordered.map(pathOf)].map((path) => ({ artboardId: refs[0].artboardId, path })));
   emit('structure', refs[0].artboardId);
 }
 

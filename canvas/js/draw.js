@@ -1,13 +1,15 @@
 // Tool menggambar: Frame (F), Text (T), dan bentuk (Rectangle, Ellipse, Segitiga, ...).
 //
-// Karena posisi di HTML diatur oleh layout, elemen baru dimasukkan ke WADAH tempat kamu mulai
-// menggambar, di urutan yang paling dekat dengan posisi mouse. Ukurannya mengikuti hasil drag.
+// Elemen baru masuk ke WADAH tempat kamu mulai menggambar, seperti Figma:
+// - wadah auto layout (flex/grid): masuk ke urutan yang paling dekat dengan posisi mouse;
+// - frame biasa: diletakkan tepat di tempat digambar (posisi Bebas / absolute).
+// Ukurannya mengikuti hasil drag.
 // (Vector dari Pen/Pencil berbeda: diletakkan bebas persis di tempat digambar, lihat vector.js.)
 import {
   state, docOf, pathOf, setSelection, setTool, toast, emit, HIDDEN_TAGS, CONTAINER_TAGS,
 } from './state.js';
 import { recordDoc } from './history.js';
-import { createArtboardWithHistory } from './actions.js';
+import { createArtboardWithHistory, nextFrameName } from './actions.js';
 import { startTextEdit } from './textedit.js';
 import { SHAPE_TOOLS, SHAPE_LABELS, buildShape } from './shapes.js';
 
@@ -78,8 +80,10 @@ function buildElement(doc, tool, w, h, dragged, start, end) {
   const height = dragged ? h : DEFAULT_SIZE;
   // flex-shrink: 0 supaya ukurannya tidak dipaksa mengecil di dalam auto-layout.
   const base = `width: ${width}px; height: ${height}px; flex-shrink: 0; box-sizing: border-box;`;
+  // Frame biasa (tanpa auto layout), seperti F di Figma. Auto layout ditambahkan lewat Shift+A.
+  // position: relative = patokan posisi elemen Bebas di dalamnya.
   el.style.cssText = tool === 'frame'
-    ? `${base} display: flex; flex-direction: column; gap: 8px; padding: 16px; background: #f4f4f5;`
+    ? `${base} position: relative; background: #f4f4f5;`
     : `${base} background: #d9d9d9;`;
   return el;
 }
@@ -96,7 +100,7 @@ export async function finishDraw(tool, start, end, dragged) {
 
   const artboard = artboardAt(start.x, start.y);
   if (!artboard) {
-    if (tool !== 'frame') return toast('Gambar di dalam artboard, atau pakai Frame untuk membuat artboard baru');
+    if (tool !== 'frame') return toast('Gambar di dalam frame, atau pakai Frame (F) di area kosong untuk membuat frame utama baru');
     const created = await createArtboardWithHistory({
       name: nextFrameName(),
       width: dragged ? rect.w : DEFAULT_SIZE,
@@ -104,7 +108,7 @@ export async function finishDraw(tool, start, end, dragged) {
       x: Math.round(rect.x),
       y: Math.round(rect.y),
       html: '',
-    }, 'Buat artboard');
+    }, 'Buat frame');
     if (created) setSelection({ artboardId: created.id, path: [] });
     return;
   }
@@ -116,16 +120,33 @@ export async function finishDraw(tool, start, end, dragged) {
   let created;
   recordDoc(artboard.id, LABELS[tool], () => {
     created = buildElement(container.ownerDocument, tool, rect.w, rect.h, dragged, start, end);
-    container.insertBefore(created, nextSiblingFor(container, cx, cy));
+    if (isAutoLayoutBox(container)) {
+      container.insertBefore(created, nextSiblingFor(container, cx, cy));
+    } else {
+      // Frame biasa: tepat di tempat digambar (klik tanpa drag = sudut kiri-atas di titik klik).
+      container.append(created);
+      placeFreeAt(created, { left: rect.x - artboard.x, top: rect.y - artboard.y });
+    }
     setSelection({ artboardId: artboard.id, path: pathOf(created) });
   });
   emit('structure', artboard.id);
   if (tool === 'text') startTextEdit(state.selection);
 }
 
-function nextFrameName() {
-  const taken = new Set(state.artboards.map((a) => a.name));
-  let n = 1;
-  while (taken.has(`Frame ${n}`)) n++;
-  return `Frame ${n}`;
+export function isAutoLayoutBox(el) {
+  return /flex|grid/.test(el.ownerDocument.defaultView.getComputedStyle(el).display);
 }
+
+// Jadikan elemen Bebas (absolute) dengan sudut kiri-atas di titik (left, top) koordinat artboard.
+export function placeFreeAt(el, { left, top }) {
+  const parent = el.parentElement;
+  const doc = el.ownerDocument;
+  if (doc.defaultView.getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+  const pr = parent.getBoundingClientRect();
+  el.style.position = 'absolute';
+  el.style.margin = '0';
+  el.style.left = `${Math.round(left - pr.left - parent.clientLeft + parent.scrollLeft)}px`;
+  el.style.top = `${Math.round(top - pr.top - parent.clientTop + parent.scrollTop)}px`;
+}
+
+
