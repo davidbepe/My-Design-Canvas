@@ -17,6 +17,15 @@
       "x": 3707,
       "y": 0,
       "file": "image.html"
+    },
+    {
+      "id": "frame-2",
+      "name": "Frame 2",
+      "width": 530,
+      "height": 273,
+      "x": 1361,
+      "y": -22,
+      "file": "frame-2.html"
     }
   ]
 }

@@ -29,6 +29,9 @@ const HTML_GUIDE =
   'Komponen: elemen ber-atribut data-component-role="master" adalah master; elemen dengan data-component yang sama ' +
   'dan data-component-role="instance" adalah salinannya dan disinkronkan otomatis oleh editor dari master. ' +
   'Untuk mengubah semua salinan, ubah master-nya; jangan mengedit isi instance. ' +
+  'Group: <div data-group style="display: contents"> hanya mengelompokkan layer (tidak punya kotak/fill/layout). ' +
+  'Prototype: atribut data-link="<id artboard>" (atau "back") membuat elemen bisa diklik di Preview untuk pindah artboard. ' +
+  'Vector: <svg data-vector> berisi satu <path> (perintah M/L/C/Z) yang titiknya bisa diedit user di editor. ' +
   `Google Fonts yang tersedia: ${GOOGLE_FONTS.map((f) => f[0]).join(', ')}. Cara termudah: set token font-* ` +
   '(mis. set_tokens {"font-sans": "\\"Inter\\", sans-serif"}), font-nya otomatis dimuat.';
 

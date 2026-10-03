@@ -1,5 +1,7 @@
 // Preview responsif: satu artboard ditampilkan berdampingan di beberapa lebar layar.
 // Ikut diperbarui setiap kali artboard itu disimpan.
+// Prototype sederhana: elemen ber-atribut data-link (diatur di bagian Interaksi panel kanan)
+// bisa diklik untuk pindah ke artboard lain; "back" = kembali ke artboard sebelumnya.
 import { state, on, getArtboard, toast } from './state.js';
 
 const BREAKPOINTS = [
@@ -15,12 +17,20 @@ let body;
 let toggles;
 let artboardId = null;
 let reloadTimer;
+let trail = []; // artboard yang sudah dilewati, untuk tombol Kembali
+let backBtn;
 
 export function initPreview(el) {
   overlay = el;
   body = el.querySelector('.preview-body');
   toggles = el.querySelector('.preview-toggles');
   el.querySelector('.preview-close').addEventListener('click', closePreview);
+  backBtn = document.createElement('button');
+  backBtn.className = 'small-btn';
+  backBtn.textContent = '← Kembali';
+  backBtn.hidden = true;
+  backBtn.addEventListener('click', () => follow('back'));
+  el.querySelector('.preview-title').before(backBtn);
   addEventListener('resize', () => { if (artboardId) layout(); });
   on('saved', (id) => { if (id === artboardId) scheduleReload(); });
   on('doc', (id) => { if (id === artboardId) scheduleReload(); });
@@ -33,9 +43,22 @@ export function openPreview() {
   const ref = state.selection;
   if (!ref) return toast('Pilih artboard (atau elemen di dalamnya) untuk dipreview');
   artboardId = ref.artboardId;
+  trail = [];
   overlay.hidden = false;
-  overlay.querySelector('.preview-title').textContent = getArtboard(artboardId)?.name ?? '';
   renderToggles();
+  build();
+}
+
+// Pindah artboard karena elemen ber-data-link diklik.
+function follow(target) {
+  if (target === 'back') {
+    if (!trail.length) return;
+    artboardId = trail.pop();
+  } else {
+    if (!getArtboard(target)) return toast('Artboard tujuan sudah tidak ada');
+    trail.push(artboardId);
+    artboardId = target;
+  }
   build();
 }
 
@@ -64,6 +87,8 @@ function renderToggles() {
 function build() {
   const a = getArtboard(artboardId);
   if (!a) return closePreview();
+  overlay.querySelector('.preview-title').textContent = a.name;
+  backBtn.hidden = !trail.length;
   body.replaceChildren(...BREAKPOINTS.filter(([, w]) => enabled.has(w)).map(([name, width]) => {
     const frame = document.createElement('div');
     frame.className = 'preview-frame';
@@ -79,6 +104,18 @@ function build() {
     iframe.src = `/designs/${encodeURIComponent(a.file)}?v=${Date.now()}`;
     // Tinggi mengikuti isi halaman di lebar itu (desain responsif bisa jadi lebih tinggi).
     iframe.addEventListener('load', () => {
+      const doc = iframe.contentDocument;
+      if (doc) {
+        const style = doc.createElement('style');
+        style.textContent = '[data-link] { cursor: pointer; }';
+        doc.head.append(style);
+        doc.addEventListener('click', (e) => {
+          const link = e.target.closest?.('[data-link]');
+          if (!link) return;
+          e.preventDefault();
+          follow(link.getAttribute('data-link'));
+        });
+      }
       const h = iframe.contentDocument?.documentElement.scrollHeight;
       if (h) iframe.style.height = `${Math.max(h, 200)}px`;
       layout();

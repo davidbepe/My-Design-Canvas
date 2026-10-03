@@ -2,7 +2,7 @@
 // Kalau beberapa elemen terpilih, nilai yang ditampilkan dari elemen utama (terakhir dipilih),
 // tapi editan berlaku ke SEMUA elemen yang terpilih.
 import { state, emit, resolve, getArtboard, setSelection, setTool, toast } from './state.js';
-import { captureDoc, group } from './history.js';
+import { captureDoc, group, recordDoc } from './history.js';
 import { changeArtboard, createArtboardWithHistory } from './actions.js';
 import { fitRect } from './camera.js';
 import { selectorOf } from './selection.js';
@@ -15,10 +15,17 @@ import { openPreview } from './preview.js';
 import {
   addAutoLayout, removeAutoLayout, alignmentOf, alignmentStyles, sizeModeOf, sizeModeStyles, fixedSizeCleanup,
 } from './autolayout.js';
-import { isFree, makeFree, makeFlow, freePosition } from './position.js';
-import { SHAPE_LABELS, setShapeCount } from './shapes.js';
+import { isFree, makeFree, makeFlow, freePosition, rotationOf } from './position.js';
+import { SHAPE_LABELS, setShapeCount, CONVERTIBLE_SHAPES, shapeToVector } from './shapes.js';
+import { isGroup, ungroupSelection } from './group.js';
+import { canAlign, alignSelection, distributeSelection } from './align.js';
+import {
+  readEffects, effectStyles, DEFAULT_EFFECTS, parseGradient, gradientCss,
+} from './effects.js';
 import { canvasColor, applyCanvasColor, CANVAS_PRESETS, DEFAULT_CANVAS } from './canvasbg.js';
-import { openColorPicker, rememberColor } from './colorpicker.js';
+import { openColorPicker, rememberColor, parseCss } from './colorpicker.js';
+import { isEditingVector, startVectorEdit, stopVectorEdit } from './vectoredit.js';
+import { isPixelGridOn, setPixelGrid } from './pixelgrid.js';
 
 const FRAME_PRESETS = [
   ['iPhone 16', 393, 852],
@@ -37,6 +44,24 @@ const TEXT_ALIGN = [['left', 'Kiri'], ['center', 'Tengah'], ['right', 'Kanan'], 
 
 let panel;
 let exportScale = '2';
+let gradStop = 0; // titik gradient yang sedang dipilih (tetap terpilih saat panel digambar ulang)
+
+// Ikon tombol Align & Distribute (14×14)
+const ALIGN_ICONS = {
+  left: '<path d="M2 1.5v11"/><rect x="4" y="3.5" width="8" height="2.5" rx=".5"/><rect x="4" y="8" width="5" height="2.5" rx=".5"/>',
+  hcenter: '<path d="M7 1.5v11"/><rect x="2.5" y="3.5" width="9" height="2.5" rx=".5"/><rect x="4" y="8" width="6" height="2.5" rx=".5"/>',
+  right: '<path d="M12 1.5v11"/><rect x="2" y="3.5" width="8" height="2.5" rx=".5"/><rect x="5" y="8" width="5" height="2.5" rx=".5"/>',
+  top: '<path d="M1.5 2h11"/><rect x="3.5" y="4" width="2.5" height="8" rx=".5"/><rect x="8" y="4" width="2.5" height="5" rx=".5"/>',
+  vcenter: '<path d="M1.5 7h11"/><rect x="3.5" y="2.5" width="2.5" height="9" rx=".5"/><rect x="8" y="4" width="2.5" height="6" rx=".5"/>',
+  bottom: '<path d="M1.5 12h11"/><rect x="3.5" y="2" width="2.5" height="8" rx=".5"/><rect x="8" y="5" width="2.5" height="5" rx=".5"/>',
+  dh: '<path d="M1.5 2v10M12.5 2v10"/><rect x="5.5" y="4" width="3" height="6" rx=".5"/>',
+  dv: '<path d="M2 1.5h10M2 12.5h10"/><rect x="4" y="5.5" width="6" height="3" rx=".5"/>',
+};
+const ALIGN_TITLES = {
+  left: 'Rata kiri (Alt+A)', hcenter: 'Rata tengah horizontal (Alt+H)', right: 'Rata kanan (Alt+D)',
+  top: 'Rata atas (Alt+W)', vcenter: 'Rata tengah vertikal (Alt+V)', bottom: 'Rata bawah (Alt+S)',
+  dh: 'Jarak horizontal sama (Alt+Shift+H)', dv: 'Jarak vertikal sama (Alt+Shift+V)',
+};
 
 export function initProperties(el) {
   panel = el;
@@ -97,10 +122,24 @@ export function renderProperties() {
 
   // Judul: tag + nama
   const header = div('props-header');
-  header.append(span('tag-pill', targets.length > 1 ? `${targets.length} dipilih` : isRoot ? 'artboard' : tag));
+  header.append(span('tag-pill', targets.length > 1 ? `${targets.length} dipilih` : isRoot ? 'artboard' : isGroup(el) ? 'group' : tag));
   const name = isRoot ? artboard.name : el.id ? `#${el.id}` : el.classList.length ? `.${[...el.classList].join('.')}` : '';
   if (name) header.append(span('props-name', name));
   panel.append(header);
+
+  if (canAlign()) renderAlignBar();
+
+  // Group: tidak punya kotak sendiri (display: contents), jadi tidak ada Fill/Spacing/Auto layout.
+  if (isGroup(el)) {
+    const g = section('Group');
+    g.append(div('props-hint', 'Group hanya mengelompokkan layer; susunan isinya tidak berubah. Klik isinya untuk memilih group, double-click untuk masuk ke elemen di dalamnya. Kalau isinya berposisi Bebas, drag group untuk memindahkan semuanya.'));
+    const btn = document.createElement('button');
+    btn.className = 'small-btn wide';
+    btn.textContent = 'Ungroup (Ctrl+Shift+G)';
+    btn.addEventListener('click', ungroupSelection);
+    row(g, btn);
+    return;
+  }
 
   // Komponen
   const comp = componentOf(el);
@@ -174,6 +213,10 @@ export function renderProperties() {
         renderProperties();
       },
     }));
+    row(ps, numberField({
+      label: 'Rotasi', value: round(rotationOf(el)), unit: 'deg',
+      onCommit: (v, n) => set('rotate', n === 0 || v === '' ? '' : v),
+    }));
     if (free) {
       const p = freePosition(el);
       row(ps,
@@ -203,6 +246,30 @@ export function renderProperties() {
       numberField({ label: 'Opacity', value: round(Number(cs.opacity) * 100), step: 5, onCommit: (_css, n) => {
         if (Number.isFinite(n)) set('opacity', String(Math.min(100, Math.max(0, n)) / 100));
       } }));
+    if (vectorKind && targets.length === 1) {
+      const editing = isEditingVector();
+      const btn = document.createElement('button');
+      btn.className = 'small-btn wide';
+      btn.classList.toggle('on', editing);
+      btn.textContent = editing ? 'Selesai edit titik' : 'Edit titik';
+      btn.addEventListener('click', () => (editing ? stopVectorEdit() : startVectorEdit(state.selection)));
+      row(s, btn);
+      s.append(div('props-hint', editing
+        ? 'Drag titik untuk memindahkan, drag handle untuk mengubah lengkungan (Alt = handle tidak simetris). Klik garis untuk menambah titik, double-click titik untuk sudut ↔ lengkung, Delete untuk menghapus titik. Esc untuk selesai.'
+        : 'Atau double-click vector-nya di kanvas.'));
+    }
+    if (CONVERTIBLE_SHAPES.has(shapeKind) && targets.length === 1) {
+      const btn = document.createElement('button');
+      btn.className = 'small-btn wide';
+      btn.textContent = 'Jadikan vector (edit titik)';
+      btn.title = 'Ubah bentuk ini jadi vector supaya titik-titiknya bisa diedit';
+      btn.addEventListener('click', () => {
+        recordDoc(ref.artboardId, 'Jadikan vector', () => shapeToVector(el));
+        emit('structure', ref.artboardId);
+        startVectorEdit(ref);
+      });
+      row(s, btn);
+    }
     if (shapeKind === 'polygon' || shapeKind === 'star') {
       row(s, numberField({
         label: shapeKind === 'star' ? 'Titik' : 'Sisi', value: Number(el.getAttribute('data-count')) || 5,
@@ -279,7 +346,24 @@ export function renderProperties() {
   if (!drawnSvg) renderFillBorder();
   function renderFillBorder() {
   const fill = section('Fill');
-  row(fill, colorField({ value: cs.backgroundColor, onCommit: (v) => set('background-color', v), ...tok('background-color', 'color') }));
+  const grad = parseGradient(cs.backgroundImage);
+  const imageFill = cs.backgroundImage !== 'none' && !grad;
+  if (imageFill) fill.append(div('props-hint', 'Fill elemen ini berupa gambar. Memilih Linear/Radial akan menggantinya dengan gradient.'));
+  row(fill, segmented({
+    value: grad ? grad.kind : 'solid',
+    options: [['solid', 'Solid'], ['linear', 'Linear'], ['radial', 'Radial']],
+    onChange: (v) => {
+      if (v === 'solid') {
+        const first = grad?.stops[0]?.color;
+        return setStyles(() => ({ 'background-image': null, ...(first ? { 'background-color': first } : {}) }));
+      }
+      gradStop = 0;
+      const base = grad ?? { angle: 180, shape: '', stops: defaultStops(cs.backgroundColor) };
+      setStyles(() => ({ 'background-image': gradientCss({ ...base, kind: v }), 'background-color': null }));
+    },
+  }));
+  if (grad) gradientEditor(fill, grad, (g) => set('background-image', gradientCss(g)));
+  else row(fill, colorField({ value: cs.backgroundColor, onCommit: (v) => set('background-color', v), ...tok('background-color', 'color') }));
   row(fill, numberField({ label: 'Opacity', value: round(Number(cs.opacity) * 100), step: 5, onCommit: (_css, n) => {
     if (Number.isFinite(n)) set('opacity', String(Math.min(100, Math.max(0, n)) / 100));
   } }));
@@ -346,11 +430,208 @@ export function renderProperties() {
     row(t, segmented({ value: cs.textAlign === 'start' ? 'left' : cs.textAlign, options: TEXT_ALIGN, onChange: (v) => set('text-align', v, { rerender: true }) }));
   }
 
-  // Efek
-  const fx = section('Efek');
-  row(fx, textField({ label: 'Shadow', value: cs.boxShadow, onCommit: (v) => set('box-shadow', v), ...tok('box-shadow', 'shadow') }));
+  // Efek ala Figma: drop shadow, inner shadow, layer blur, background blur
+  renderEffects();
+  function renderEffects() {
+    const svgMode = drawnSvg; // shape/vector: bayangan mengikuti bentuknya (filter drop-shadow)
+    const linkedShadow = linkedToken(el, 'box-shadow');
+    const effects = readEffects(cs, svgMode);
+    const write = (list, rerender) => setStyles((t) => effectStyles(t, list, svgMode), { rerender });
+    const fx = section('Efek', { label: '+', title: 'Tambah efek', onClick: () => write([...effects, { ...DEFAULT_EFFECTS.drop }], true) });
+    if (linkedShadow) {
+      row(fx, textField({ label: 'Shadow', value: cs.boxShadow, onCommit: (v) => set('box-shadow', v, { rerender: true }), ...tok('box-shadow', 'shadow') }));
+      fx.append(div('props-hint', 'Shadow ini memakai variabel. Klik + untuk menggantinya dengan efek yang bisa diatur sendiri.'));
+      return;
+    }
+    if (!effects.length) fx.append(div('props-hint', 'Klik + untuk menambah shadow atau blur.'));
+    const types = svgMode
+      ? [['drop', 'Drop shadow'], ['layer-blur', 'Layer blur']]
+      : [['drop', 'Drop shadow'], ['inner', 'Inner shadow'], ['layer-blur', 'Layer blur'], ['bg-blur', 'Background blur']];
+    effects.forEach((item, i) => {
+      const box = div('fx-item');
+      fx.append(box);
+      const update = (patch) => { Object.assign(item, patch); write(effects, false); };
+      const remove = document.createElement('button');
+      remove.className = 'icon-text-btn';
+      remove.textContent = '−';
+      remove.title = 'Hapus efek';
+      remove.addEventListener('click', () => write(effects.filter((_, j) => j !== i), true));
+      row(box, selectField({
+        value: item.type, options: types,
+        onChange: (v) => write(effects.map((e, j) => (j === i ? { ...DEFAULT_EFFECTS[v] } : e)), true),
+      }), remove);
+      const num = (label, key, min = -Infinity) => numberField({
+        label, value: round(item[key]), unit: 'px',
+        onCommit: (_css, n) => { if (Number.isFinite(n)) update({ [key]: Math.max(min, n) }); },
+      });
+      if (item.type === 'drop' || item.type === 'inner') {
+        row(box, num('X', 'x'), num('Y', 'y'));
+        row(box, num('Blur', 'blur', 0), ...(svgMode ? [] : [num('Spread', 'spread')]));
+        row(box, colorField({ value: item.color, onCommit: (v) => update({ color: v }) }));
+      } else {
+        row(box, num('Blur', 'blur', 0));
+      }
+    });
+    if (!svgMode) {
+      const pick = document.createElement('button');
+      pick.className = 'small-btn wide';
+      pick.textContent = '◇ Pakai variabel shadow';
+      pick.addEventListener('click', () => openTokenMenu(pick, 'shadow', (v) => set('box-shadow', v, { rerender: true })));
+      row(fx, pick);
+    }
+  }
+
+  // Interaksi (prototype sederhana): klik elemen di Preview untuk pindah artboard.
+  if (!isRoot && targets.length === 1) {
+    const ix = section('Interaksi');
+    const options = [
+      ['', 'Tidak ada'],
+      ...state.artboards.filter((a) => a.id !== ref.artboardId).map((a) => [a.id, `Buka "${a.name}"`]),
+      ['back', 'Kembali ke artboard sebelumnya'],
+    ];
+    row(ix, selectField({
+      label: 'Klik', value: el.getAttribute('data-link') ?? '', options,
+      onChange: (v) => {
+        captureDoc(ref.artboardId, 'Ubah interaksi');
+        if (v) el.setAttribute('data-link', v);
+        else el.removeAttribute('data-link');
+        emit('edit', ref.artboardId);
+        renderProperties();
+      },
+    }));
+    ix.append(div('props-hint', el.hasAttribute('data-link')
+      ? 'Buka Preview, lalu klik elemen ini untuk mencoba perpindahannya.'
+      : 'Pilih artboard tujuan saat elemen ini diklik di Preview, seperti prototype di Figma.'));
+  }
 
   renderExport();
+}
+
+// ---------- Align & Distribute ----------
+
+function renderAlignBar() {
+  const bar = div('align-bar');
+  const multi = state.selected.length >= 3;
+  for (const mode of ['left', 'hcenter', 'right', 'top', 'vcenter', 'bottom', 'dh', 'dv']) {
+    const btn = document.createElement('button');
+    btn.className = 'align-btn';
+    btn.title = ALIGN_TITLES[mode];
+    btn.innerHTML = `<svg viewBox="0 0 14 14">${ALIGN_ICONS[mode]}</svg>`;
+    const distribute = mode === 'dh' || mode === 'dv';
+    btn.disabled = distribute && !multi;
+    btn.addEventListener('click', () => (distribute ? distributeSelection(mode === 'dh' ? 'h' : 'v') : alignSelection(mode)));
+    bar.append(btn);
+  }
+  panel.append(bar);
+}
+
+// ---------- Gradient ----------
+
+function defaultStops(bg) {
+  const { r, g, b, a } = parseCss(bg);
+  const color = a === 0 ? 'rgb(0, 0, 0)' : `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+  return [{ color, pos: 0 }, { color: color.replace('rgb(', 'rgba(').replace(')', ', 0)'), pos: 100 }];
+}
+
+// Editor gradient ala Figma: bar berisi titik warna (drag untuk menggeser, klik bar untuk menambah),
+// lalu warna & posisi titik yang dipilih, plus sudut untuk linear.
+function gradientEditor(sectionEl, g, onChange) {
+  const wrap = div('grad-editor');
+  sectionEl.append(wrap);
+  let sel = Math.min(gradStop, g.stops.length - 1);
+  const select = (i) => { sel = i; gradStop = i; };
+
+  function draw() {
+    wrap.replaceChildren();
+    const bar = div('grad-bar');
+    const preview = div('grad-preview');
+    const paint = () => { preview.style.background = gradientCss({ ...g, kind: 'linear', angle: 90 }); };
+    paint();
+    bar.append(preview);
+    const markers = g.stops.map((stop, i) => {
+      const m = div('grad-stop');
+      m.style.left = `${stop.pos}%`;
+      m.style.setProperty('--sw', stop.color);
+      m.classList.toggle('on', i === sel);
+      m.title = 'Drag untuk menggeser, klik untuk memilih';
+      m.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        select(i);
+        markers.forEach((x, j) => x.classList.toggle('on', j === i));
+        m.setPointerCapture(e.pointerId);
+        const rect = bar.getBoundingClientRect();
+        const move = (ev) => {
+          stop.pos = Math.round(Math.min(100, Math.max(0, ((ev.clientX - rect.left) / rect.width) * 100)));
+          m.style.left = `${stop.pos}%`;
+          paint();
+          onChange(g);
+        };
+        const up = () => {
+          m.removeEventListener('pointermove', move);
+          m.removeEventListener('pointerup', up);
+          draw();
+        };
+        m.addEventListener('pointermove', move);
+        m.addEventListener('pointerup', up);
+      });
+      bar.append(m);
+      return m;
+    });
+    // Klik bar = tambah titik di posisi itu, warnanya diambil dari titik terdekat.
+    bar.addEventListener('pointerdown', (e) => {
+      const rect = bar.getBoundingClientRect();
+      const pos = Math.round(Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100)));
+      const nearest = [...g.stops].sort((a, b) => Math.abs(a.pos - pos) - Math.abs(b.pos - pos))[0];
+      g.stops.push({ color: nearest.color, pos });
+      select(g.stops.length - 1);
+      onChange(g);
+      draw();
+    });
+    wrap.append(bar);
+
+    const stop = g.stops[sel];
+    const r = div('prop-row');
+    r.append(
+      colorField({ value: stop.color, onCommit: (v) => {
+        stop.color = v;
+        markers[sel].style.setProperty('--sw', v);
+        paint();
+        onChange(g);
+      } }),
+      numberField({ label: '%', value: round(stop.pos), onCommit: (_css, n) => {
+        if (!Number.isFinite(n)) return;
+        stop.pos = Math.min(100, Math.max(0, n));
+        onChange(g);
+        draw();
+      } }),
+    );
+    if (g.stops.length > 2) {
+      const remove = document.createElement('button');
+      remove.className = 'icon-text-btn';
+      remove.textContent = '−';
+      remove.title = 'Hapus titik warna ini';
+      remove.addEventListener('click', () => {
+        g.stops.splice(sel, 1);
+        select(0);
+        onChange(g);
+        draw();
+      });
+      r.append(remove);
+    }
+    wrap.append(r);
+    if (g.kind === 'linear') {
+      const ar = div('prop-row');
+      ar.append(numberField({ label: 'Sudut', value: round(g.angle), unit: '', onCommit: (_css, n) => {
+        if (!Number.isFinite(n)) return;
+        g.angle = n;
+        onChange(g);
+      } }));
+      wrap.append(ar);
+    }
+    wrap.append(div('props-hint', 'Klik bar untuk menambah titik warna, drag titik untuk menggesernya.'));
+  }
+  draw();
 }
 
 // ---------- Tidak ada yang dipilih: pengaturan kanvas ----------
@@ -384,6 +665,12 @@ function renderNothingSelected() {
   reset.addEventListener('click', () => apply(DEFAULT_CANVAS));
   presets.append(reset);
   s.append(presets);
+  // Pixel grid: garis per 1 px desain saat zoom >= 400%
+  const grid = isPixelGridOn();
+  row(s, toggleButton(grid ? 'Pixel grid: nyala' : 'Pixel grid: mati', grid, "Garis tiap 1 px desain saat zoom 400% ke atas (Shift + ')", () => {
+    setPixelGrid(!grid);
+    renderProperties();
+  }));
 
   panel.append(div('props-empty', 'Pilih elemen di kanvas atau di panel Layers untuk mengedit propertinya.'));
   const open = document.createElement('button');

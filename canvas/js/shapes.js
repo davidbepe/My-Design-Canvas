@@ -94,3 +94,34 @@ export function setShapeCount(svg, count) {
 }
 
 const round = (n) => Math.round(n * 100) / 100;
+
+// Jadikan vector: segitiga/polygon/bintang/garis diganti <path>, supaya titiknya bisa diedit (Pen).
+export const CONVERTIBLE_SHAPES = new Set(['triangle', 'polygon', 'star', 'line']);
+
+export function shapeToVector(svg) {
+  const kind = svg.getAttribute('data-shape');
+  if (!CONVERTIBLE_SHAPES.has(kind)) return false;
+  const doc = svg.ownerDocument;
+  const poly = svg.querySelector(':scope > polygon');
+  const line = svg.querySelector(':scope > line');
+  let d;
+  if (poly) {
+    const pts = poly.getAttribute('points').trim().split(/\s+/).map((p) => p.split(',').map(Number));
+    d = `M ${pts.map(([x, y]) => `${round(x)} ${round(y)}`).join(' L ')} Z`;
+  } else if (line) {
+    const n = (k) => round(Number(line.getAttribute(k)) || 0);
+    d = `M ${n('x1')} ${n('y1')} L ${n('x2')} ${n('y2')}`;
+  } else {
+    return false;
+  }
+  const path = doc.createElementNS(SVG, 'path');
+  path.setAttribute('d', d);
+  path.setAttribute('vector-effect', 'non-scaling-stroke');
+  (poly ?? line).replaceWith(path);
+  svg.removeAttribute('data-shape');
+  svg.removeAttribute('data-count');
+  svg.setAttribute('data-vector', 'pen');
+  svg.setAttribute('aria-label', 'Vector');
+  if (!svg.getAttribute('preserveAspectRatio')) svg.setAttribute('preserveAspectRatio', 'none');
+  return true;
+}

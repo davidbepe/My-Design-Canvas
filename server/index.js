@@ -30,9 +30,12 @@ await ensureDesignsDir();
 await ensureTokens();
 await linkTokensInAllArtboards();
 
-// HTML terakhir yang disimpan editor per file. Dipakai supaya simpanan editor sendiri
-// tidak memicu reload kanvas (yang akan membuat seleksi berkedip).
-const editorWrites = new Map();
+// Beberapa HTML terakhir yang disimpan editor per file. Dipakai supaya simpanan editor sendiri
+// tidak memicu reload kanvas (yang akan membuat seleksi berkedip). Disimpan beberapa, bukan satu:
+// saat editor menyimpan dua kali berturut-turut, file sempat berisi simpanan pertama ketika
+// simpanan kedua sudah tercatat. Tanpa ini, kanvas memuat ulang versi lama dan editan terbaru hilang.
+const editorWrites = new Map(); // file -> [html, ...]
+const EDITOR_WRITES_KEPT = 5;
 // Elemen yang sedang dipilih di kanvas, dikirim browser lewat WebSocket.
 let currentSelection = null;
 
@@ -74,7 +77,8 @@ app.delete('/api/artboards/:id', async (req, res) => {
 
 app.put('/api/artboards/:id/html', express.text({ type: '*/*', limit: '20mb' }), async (req, res) => {
   const artboard = await getArtboard(req.params.id);
-  editorWrites.set(artboard.file, prepareHtml(req.body, artboard.name));
+  const recent = [prepareHtml(req.body, artboard.name), ...(editorWrites.get(artboard.file) ?? [])];
+  editorWrites.set(artboard.file, recent.slice(0, EDITOR_WRITES_KEPT));
   await writeArtboardHtml(artboard.id, { html: req.body });
   res.json({ ok: true });
 });
@@ -190,7 +194,7 @@ function watchDesigns() {
         const artboard = (await listArtboards()).find((a) => a.file === filename);
         if (!artboard) return;
         const content = await fs.promises.readFile(path.join(DESIGNS_DIR, filename), 'utf8').catch(() => null);
-        if (content !== null && content === editorWrites.get(filename)) return; // simpanan editor sendiri
+        if (content !== null && editorWrites.get(filename)?.includes(content)) return; // simpanan editor sendiri
         editorWrites.delete(filename);
         broadcast({ type: 'reload', id: artboard.id, version: Date.now() });
       }

@@ -16,7 +16,12 @@ import {
 import {
   vectorDown, vectorMove, vectorUp, vectorDoubleClick, isDrawingVector, redrawVector,
 } from './vector.js';
-import { isFree, freePosition } from './position.js';
+import { isFree, freePosition, rotationOf } from './position.js';
+import { isGroup, isMovableGroup, freeLeaves, boxOf } from './group.js';
+import {
+  isEditingVector, canEditVector, startVectorEdit, stopVectorEdit, vectorEditDown, vectorEditMove, vectorEditUp,
+  vectorEditDoubleClick, redrawVectorEdit,
+} from './vectoredit.js';
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const DRAG_THRESHOLD = 4;
@@ -25,6 +30,7 @@ let hoverBox;
 let selBox;
 let badge;
 let drawBox;
+let rotHandle;
 const handleEls = {};
 let gesture = null;
 
@@ -33,11 +39,24 @@ export function initSelection(viewportEl, overlayEl) {
   selBox = makeEl('ov-box selected');
   badge = makeEl('size-badge');
   drawBox = makeEl('draw-box');
-  overlayEl.append(hoverBox, selBox, badge, drawBox);
+  rotHandle = makeEl('rotate-handle');
+  rotHandle.dataset.rotate = '1';
+  rotHandle.title = 'Drag untuk memutar (Shift = kelipatan 15°)';
+  // Garis hover/seleksi dan handle digambar DI DALAM world (lapisan yang sama dengan artboard),
+  // bukan di lapisan terpisah di atasnya. Browser kadang membulatkan posisi lapisan artboard
+  // berbeda dari lapisan lain (terutama saat digambar GPU), sehingga garis bisa meleset beberapa
+  // piksel dari tepi artboard. Di lapisan yang sama, garis selalu ikut menempel.
+  // Tebal garis & ukuran handle dibagi zoom di CSS, jadi di layar tetap 1px / 8px.
+  const selLayer = makeEl('sel-layer');
+  selLayer.hidden = false;
+  document.getElementById('world').append(selLayer);
+  selLayer.append(hoverBox, selBox, rotHandle);
+  overlayEl.append(badge, drawBox); // kotak putus-putus saat menggambar tetap di lapisan layar
+
   for (const h of HANDLES) {
     handleEls[h] = makeEl(`handle handle-${h}`);
     handleEls[h].dataset.handle = h;
-    overlayEl.append(handleEls[h]);
+    selLayer.append(handleEls[h]);
   }
 
   viewportEl.addEventListener('pointerdown', (e) => onDown(e, viewportEl));
@@ -55,6 +74,16 @@ function onDown(e, viewportEl) {
   if (e.button !== 0 || wantsPan(e)) return;
   if (isEditableTarget(e.target)) return; // sedang mengganti nama artboard
   finishTextEdit();
+
+  // Mode edit titik vector: klik titik/handle/garis ditangani di sana; klik di tempat lain = keluar.
+  if (isEditingVector()) {
+    if (vectorEditDown(e, toLocal(e))) {
+      gesture = { kind: 'vectorEdit' };
+      viewportEl.setPointerCapture(e.pointerId);
+      return;
+    }
+    stopVectorEdit();
+  }
 
   if (VECTOR_TOOLS.has(state.tool)) {
     const { sx, sy } = toLocal(e);
@@ -75,7 +104,14 @@ function onDown(e, viewportEl) {
 
   const sel = state.selection;
   const handle = e.target.dataset?.handle;
-  if (handle && sel && !sel.path.length) {
+  if (e.target.dataset?.rotate && sel?.path.length) {
+    // Putar elemen: sudut dihitung dari titik tengah elemen ke kursor.
+    const el = resolve(sel);
+    const r = rectOf(sel);
+    const c = worldToScreen(r.x + r.w / 2, r.y + r.h / 2);
+    const { sx, sy } = toLocal(e);
+    gesture = { kind: 'rotate', ref: sel, el, cx: c.x, cy: c.y, startAngle: angleOf(c, sx, sy), startRot: rotationOf(el) };
+  } else if (handle && sel && !sel.path.length) {
     gesture = { kind: 'resize', handle, ...start(e, sel.artboardId) };
   } else {
     const hit = hitTest(e);
@@ -93,7 +129,7 @@ function onDown(e, viewportEl) {
 function freeAncestor(ref) {
   let el = resolve(ref);
   while (el && el.tagName !== 'BODY') {
-    if (isFree(el)) return { artboardId: ref.artboardId, path: pathOf(el) };
+    if (isFree(el) || isMovableGroup(el)) return { artboardId: ref.artboardId, path: pathOf(el) };
     el = el.parentElement;
   }
   return null;
@@ -123,6 +159,7 @@ function start(e, artboardId) {
 }
 
 function onMove(e) {
+  if (gesture?.kind === 'vectorEdit') return vectorEditMove(toLocal(e), e);
   if (VECTOR_TOOLS.has(state.tool)) {
     const { sx, sy } = toLocal(e);
     if (isDrawingVector()) vectorMove(screenToWorld(sx, sy), e);
@@ -130,6 +167,19 @@ function onMove(e) {
   }
   if (!gesture) {
     if (!isPanning() && !e.buttons && !isEditingText()) setHover(hoverTarget(e));
+    return;
+  }
+
+  if (gesture.kind === 'rotate') {
+    const { sx, sy } = toLocal(e);
+    let deg = gesture.startRot + angleOf({ x: gesture.cx, y: gesture.cy }, sx, sy) - gesture.startAngle;
+    deg = e.shiftKey ? Math.round(deg / 15) * 15 : Math.round(deg * 10) / 10;
+    deg = Math.round((((deg % 360) + 540) % 360 - 180) * 10) / 10; // -180..180
+    captureDoc(gesture.ref.artboardId, 'Rotasi');
+    if (deg) gesture.el.style.rotate = `${deg}deg`;
+    else gesture.el.style.removeProperty('rotate');
+    emit('edit', gesture.ref.artboardId);
+    badge.textContent = `${deg}°`;
     return;
   }
 
@@ -158,8 +208,10 @@ function onMove(e) {
       const ref = gesture.freeRef;
       if (!isSelected(ref)) setSelection(ref);
       const el = resolve(ref);
+      // Group: semua elemen bebas di dalamnya ikut bergeser.
+      const items = (isGroup(el) ? freeLeaves(el) : [el]).map((t) => ({ el: t, pos: freePosition(t) }));
       Object.assign(gesture, {
-        kind: 'moveEl', ref, el, startPos: freePosition(el), startRect: rectOf(ref), boxes: siblingBoxes(el, ref),
+        kind: 'moveEl', ref, items, startRect: rectOf(ref), boxes: siblingBoxes(el, ref),
       });
     } else {
       gesture.kind = 'move';
@@ -167,12 +219,14 @@ function onMove(e) {
   }
 
   if (gesture.kind === 'moveEl') {
-    const { ref, el, startPos, startRect, boxes } = gesture;
+    const { ref, items, startRect, boxes } = gesture;
     const rect = { ...startRect, x: startRect.x + dx, y: startRect.y + dy };
     const snap = e.ctrlKey ? { dx: 0, dy: 0 } : snapMove(rect, boxes);
     captureDoc(ref.artboardId, 'Pindah elemen');
-    el.style.left = `${Math.round(startPos.left + dx + snap.dx)}px`;
-    el.style.top = `${Math.round(startPos.top + dy + snap.dy)}px`;
+    for (const { el, pos } of items) {
+      el.style.left = `${Math.round(pos.left + dx + snap.dx)}px`;
+      el.style.top = `${Math.round(pos.top + dy + snap.dy)}px`;
+    }
     showGuidesFor(rectOf(ref), boxes);
     emit('edit', ref.artboardId);
     return;
@@ -251,10 +305,11 @@ function onUp(e) {
   gesture = null;
   if (!g) return;
   if (g.kind === 'vector') return vectorUp();
+  if (g.kind === 'vectorEdit') return vectorEditUp();
   clearGuides();
   drawOverlay();
-  if (g.kind === 'moveEl') {
-    emit('structure', g.ref.artboardId); // perbarui X/Y di panel kanan
+  if (g.kind === 'moveEl' || g.kind === 'rotate') {
+    emit('structure', g.ref.artboardId); // perbarui X/Y / rotasi di panel kanan
     return;
   }
   if (g.kind === 'draw') {
@@ -309,7 +364,7 @@ function drawRect() {
 function drawDrawBox() {
   const rect = drawRect();
   drawGuides(rectOf);
-  const screen = place(drawBox, rect);
+  const screen = placeOnScreen(drawBox, rect);
   badge.hidden = false;
   badge.textContent = `${Math.round(rect.w)} × ${Math.round(rect.h)}`;
   badge.style.left = `${screen.x + screen.w / 2}px`;
@@ -325,17 +380,27 @@ function labelAt(e) {
 function onDoubleClick(e) {
   if (VECTOR_TOOLS.has(state.tool)) return vectorDoubleClick();
   if (state.tool !== 'select' || isEditableTarget(e.target)) return;
+  if (isEditingVector()) return vectorEditDoubleClick(toLocal(e));
   const label = labelAt(e);
   if (label) return startRename(label.parentElement.dataset.id);
-  const hit = hitTest(e);
+  const hit = hitTest(e, true);
+  // Double-click group: masuk dan pilih elemen di dalamnya.
+  const current = resolve(state.selection);
+  if (hit && isGroup(current) && !sameRef(hit, state.selection) && current.contains(resolve(hit))) {
+    setSelection(hit);
+    return;
+  }
   if (hit?.path.length && isTextLeaf(resolve(hit))) {
     setSelection(hit);
     startTextEdit(hit);
+  } else if (hit?.path.length && canEditVector(resolve(hit))) {
+    startVectorEdit(hit);
   }
 }
 
 // Cari elemen di bawah kursor: tentukan artboard-nya, lalu tanya dokumen di dalam iframe.
-function hitTest(e) {
+// deep = double-click: boleh masuk ke dalam group yang sedang terpilih.
+function hitTest(e, deep = false) {
   const label = labelAt(e);
   if (label) return { artboardId: label.parentElement.dataset.id, path: [] };
 
@@ -350,11 +415,27 @@ function hitTest(e) {
     if (!target || target === doc.body || target === doc.documentElement) return root;
     target = target.closest('svg') ?? target; // ikon SVG dipilih utuh, bukan per garis
     target = target.closest(`[${COMPONENT_ROLE}="instance"]`) ?? target; // instance komponen dipilih utuh
+    target = groupTarget(target, deep);
     const path = pathOf(target);
     return path ? { artboardId: a.id, path } : root;
   }
   return null;
 }
+
+// Klik isi group = pilih group-nya (seperti Figma), kecuali sudah berada di dalam group itu.
+function groupTarget(target, deep) {
+  const sel = resolve(state.selection);
+  const groups = [];
+  for (let p = target.parentElement; p && p.tagName !== 'BODY'; p = p.parentElement) if (isGroup(p)) groups.unshift(p);
+  for (const g of groups) {
+    if (sel && sel !== g && g.contains(sel)) continue; // elemen di dalam group ini sedang terpilih
+    if (sel === g && deep) continue; // double-click group yang terpilih = masuk ke dalamnya
+    return g;
+  }
+  return target;
+}
+
+const angleOf = (c, sx, sy) => (Math.atan2(sy - c.y, sx - c.x) * 180) / Math.PI;
 
 // Shortcut navigasi ala Figma: Esc = batal pilih, Enter = masuk ke anak (atau edit teks),
 // Shift+Enter = naik ke induk.
@@ -371,6 +452,8 @@ function onKey(e) {
     const el = resolve(state.selection);
     if (path.length && isTextLeaf(el)) {
       startTextEdit(state.selection);
+    } else if (canEditVector(el)) {
+      startVectorEdit(state.selection);
     } else {
       // Jangan masuk ke dalam ikon SVG atau instance komponen (isinya diatur oleh master).
       const leaf = el && (el.tagName.toLowerCase() === 'svg' || el.getAttribute(COMPONENT_ROLE) === 'instance');
@@ -393,12 +476,11 @@ export function rectOf(ref) {
   if (!ref.path.length) return { x: a.x, y: a.y, w: a.width, h: a.height };
   const el = resolve(ref);
   if (!el) return null;
-  const r = el.getBoundingClientRect();
+  const r = boxOf(el); // group: gabungan kotak isinya
   return { x: a.x + r.left, y: a.y + r.top, w: r.width, h: r.height };
 }
 
-function place(boxEl, rect) {
-  if (!rect) { boxEl.hidden = true; return null; }
+function placeOnScreen(boxEl, rect) {
   const p = worldToScreen(rect.x, rect.y);
   const z = state.view.zoom;
   const screen = { x: p.x, y: p.y, w: rect.w * z, h: rect.h * z };
@@ -407,6 +489,29 @@ function place(boxEl, rect) {
   });
   boxEl.hidden = false;
   return screen;
+}
+
+// Handle berukuran tetap (px layar) dengan titik tengah di titik world (x, y).
+// - Posisi lewat left/top, sama seperti garis seleksi: browser membulatkan keduanya dengan cara
+//   yang sama, jadi handle selalu tepat di pertemuan garis.
+// - Ukuran lewat transform scale (bukan width/height dibagi zoom): ukuran yang dibulatkan browser
+//   sebelum diperbesar membuat handle jadi persegi panjang di zoom besar.
+function placeHandle(el, x, y) {
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  el.style.transform = `scale(${1 / state.view.zoom}) translate(-50%, -50%)`;
+}
+
+// Taruh kotak di koordinat world (ikut transform kanvas). Mengembalikan posisinya di layar.
+function place(boxEl, rect) {
+  if (!rect) { boxEl.hidden = true; return null; }
+  Object.assign(boxEl.style, {
+    left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px`,
+  });
+  boxEl.hidden = false;
+  const p = worldToScreen(rect.x, rect.y);
+  const z = state.view.zoom;
+  return { x: p.x, y: p.y, w: rect.w * z, h: rect.h * z };
 }
 
 // Kotak biru untuk elemen terpilih tambahan (multi-select). Dibuat sesuai kebutuhan.
@@ -423,6 +528,7 @@ export function drawOverlay() {
   // Garis merah (smart guides / pengukur Alt). Saat mengukur, kotak hover biru diganti kotak merah.
   const measuring = drawGuides(rectOf);
   redrawVector(); // pratinjau Pen/Pencil ikut bergeser saat kanvas di-zoom/pan
+  redrawVectorEdit();
   const showHover = !isEditingText() && !measuring && !isSelected(state.hover);
   place(hoverBox, showHover ? rectOf(state.hover) : null);
 
@@ -430,7 +536,7 @@ export function drawOverlay() {
   others.forEach((ref, i) => place(extraBox(i), rectOf(ref)));
   for (let i = others.length; i < extraBoxes.length; i++) extraBoxes[i].hidden = true;
 
-  const rect = rectOf(state.selection);
+  const rect = isEditingVector() ? null : rectOf(state.selection); // saat edit titik, kotak seleksi disembunyikan
   const screen = place(selBox, rect);
   badge.hidden = !screen;
   if (screen) {
@@ -446,10 +552,16 @@ export function drawOverlay() {
     const el = handleEls[h];
     el.hidden = !showHandles;
     if (!showHandles) continue;
-    const x = screen.x + (h.includes('w') ? 0 : h.includes('e') ? screen.w : screen.w / 2);
-    const y = screen.y + (h.includes('n') ? 0 : h.includes('s') ? screen.h : screen.h / 2);
-    el.style.left = `${x}px`;
-    el.style.top = `${y}px`;
+    const x = rect.x + (h.includes('w') ? 0 : h.includes('e') ? rect.w : rect.w / 2);
+    const y = rect.y + (h.includes('n') ? 0 : h.includes('s') ? rect.h : rect.h / 2);
+    placeHandle(el, x, y);
+  }
+
+  // Handle rotasi: satu elemen (bukan artboard/group), di atas kotak seleksi.
+  const selEl = screen && state.selected.length === 1 && state.selection.path.length ? resolve(state.selection) : null;
+  rotHandle.hidden = !selEl || isGroup(selEl);
+  if (!rotHandle.hidden) {
+    placeHandle(rotHandle, rect.x + rect.w / 2, rect.y - 18 / state.view.zoom);
   }
 
   for (const [id, node] of state.nodes) {
@@ -466,7 +578,7 @@ function describeRef(ref) {
   const a = getArtboard(ref.artboardId);
   const el = resolve(ref);
   if (!a || !el) return null;
-  const r = ref.path.length ? el.getBoundingClientRect() : { left: 0, top: 0, width: a.width, height: a.height };
+  const r = ref.path.length ? boxOf(el) : { left: 0, top: 0, width: a.width, height: a.height };
   let html = el.outerHTML;
   if (html.length > 6000) html = `${html.slice(0, 6000)}\n<!-- …dipotong, pakai get_dom untuk lengkapnya -->`;
   return {

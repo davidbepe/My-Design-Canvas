@@ -843,10 +843,11 @@ textarea.field-input { resize: vertical; min-height: 52px; padding: 6px 7px; lin
    dilepas dan isi artboard digambar ulang dengan tajam di level zoom yang baru. */
 #world.moving { will-change: transform; }
 
+/* Tanpa bayangan, seperti frame di Figma/pen.dev: yang tampil hanya desainnya sendiri.
+   (Bayangan editor dulu terlihat seperti shadow milik desain, terutama di kanvas terang.) */
 .artboard {
   position: absolute;
   background: #fff;
-  box-shadow: 0 calc(2px / var(--zoom)) calc(16px / var(--zoom)) rgba(0, 0, 0, 0.35);
 }
 
 /* Label dibagi dengan zoom supaya ukurannya tetap terbaca di level zoom berapa pun. */
@@ -882,12 +883,43 @@ textarea.field-input { resize: vertical; min-height: 52px; padding: 6px 7px; lin
 }
 .artboard.rounded, .artboard.rounded iframe { background: transparent; }
 
+/* Pixel grid (pixelgrid.js): garis tiap 1 px desain, di atas kanvas & artboard, di bawah seleksi.
+   Abu-abu semi transparan supaya terlihat di kanvas terang, gelap, maupun di atas artboard putih. */
+#pixel-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgba(128, 128, 128, 0.16) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(128, 128, 128, 0.16) 1px, transparent 1px);
+}
+
 /* Garis hover & seleksi digambar di atas kanvas (bukan di dalam desain),
    supaya tetap 1px tajam di level zoom berapa pun dan tidak ikut tersimpan. */
 #overlay { position: absolute; inset: 0; pointer-events: none; }
 .ov-box { position: absolute; border: 1px solid var(--accent); }
 .ov-box.selected { border-width: 1.5px; }
 .draw-box { position: absolute; border: 1px dashed var(--accent); background: var(--accent-soft); }
+
+/* Lapisan garis seleksi & handle di dalam world (lihat initSelection). Ukuran dibagi zoom
+   supaya di layar tetap sama besar di level zoom berapa pun.
+   Garis memakai box-shadow, BUKAN border: browser membulatkan border minimal 1px sebelum
+   diperbesar zoom (di zoom 8x jadi 8px tebal), sedangkan box-shadow tidak dibulatkan.
+   Garis diletakkan tepat di atas tepi: setengah di luar, setengah di dalam (seperti pen.dev/Figma). */
+.sel-layer { position: absolute; left: 0; top: 0; z-index: 5; pointer-events: none; }
+.sel-layer .ov-box {
+  border: 0;
+  --line: calc(0.5px / var(--zoom));
+  box-shadow: 0 0 0 var(--line) var(--accent), inset 0 0 0 var(--line) var(--accent);
+}
+.sel-layer .ov-box.selected { --line: calc(0.75px / var(--zoom)); }
+/* Handle: ukuran asli (px layar), diperkecil lewat transform di placeHandle() (selection.js). */
+.sel-layer .handle, .sel-layer .rotate-handle {
+  transform-origin: 0 0;
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.sel-layer .rotate-handle { box-shadow: inset 0 0 0 1.5px var(--accent); }
 
 /* Garis bantu merah: smart guides & pengukur jarak (Alt) */
 .guides { position: absolute; inset: 0; pointer-events: none; }
@@ -904,6 +936,9 @@ textarea.field-input { resize: vertical; min-height: 52px; padding: 6px 7px; lin
 .vector-preview { fill: none; stroke: var(--accent); stroke-width: 1.5; }
 .vector-handle { stroke: var(--accent); stroke-width: 1; opacity: 0.6; }
 .vector-point { fill: #fff; stroke: var(--accent); stroke-width: 1.5; }
+.vector-point.on { fill: var(--accent); }
+.vector-edit-path { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.vector-handle-end { fill: #fff; stroke: var(--accent); stroke-width: 1.5; }
 .guide-label {
   position: absolute;
   transform: translate(-50%, -50%);
@@ -937,6 +972,19 @@ textarea.field-input { resize: vertical; min-height: 52px; padding: 6px 7px; lin
   border: 1px solid var(--accent);
   pointer-events: auto;
 }
+/* Handle rotasi elemen, di atas kotak seleksi. */
+.rotate-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  cursor: grab;
+  pointer-events: auto;
+}
+.rotate-handle:active { cursor: grabbing; }
 .handle-nw, .handle-se { cursor: nwse-resize; }
 .handle-ne, .handle-sw { cursor: nesw-resize; }
 .handle-n, .handle-s { cursor: ns-resize; }
@@ -1101,3 +1149,28 @@ textarea.field-input { resize: vertical; min-height: 52px; padding: 6px 7px; lin
 }
 #empty p { margin: 4px 0; }
 #empty .hint { opacity: 0.7; font-size: 12px; }
+
+/* Align & Distribute (atas panel kanan) */
+.align-bar { display: flex; justify-content: space-between; gap: 2px; padding: 8px 12px; border-bottom: 1px solid var(--panel-border); }
+.align-btn { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 4px; color: var(--text); }
+.align-btn:hover:not(:disabled) { background: var(--hover, rgba(255, 255, 255, 0.08)); }
+.align-btn:disabled { opacity: 0.3; cursor: default; }
+.align-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.1; }
+
+/* Efek: satu kotak per efek */
+.fx-item { padding-top: 8px; margin-top: 4px; border-top: 1px dashed var(--panel-border); }
+.fx-item:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+
+/* Editor gradient */
+.grad-editor { margin-top: 4px; }
+.grad-bar {
+  position: relative; height: 22px; margin: 4px 7px 12px; border-radius: 4px; cursor: copy;
+  background: var(--checker); background-size: 8px 8px;
+}
+.grad-preview { position: absolute; inset: 0; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15); }
+.grad-stop {
+  position: absolute; top: 50%; width: 14px; height: 14px; transform: translate(-50%, -50%);
+  border-radius: 3px; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  background: linear-gradient(var(--sw), var(--sw)), var(--checker); background-size: auto, 6px 6px; cursor: ew-resize;
+}
+.grad-stop.on { border-color: var(--accent); box-shadow: 0 0 0 1px #fff; }

@@ -15,6 +15,7 @@ const ICONS = {
   input: '<svg viewBox="0 0 14 14"><rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M4 5.8v2.4"/></svg>',
   shape: '<svg viewBox="0 0 14 14"><path d="M7 2l5 9H2z"/></svg>',
   vector: '<svg viewBox="0 0 14 14"><path d="M2 11c2-1 2.5-5 5-5s3 3 5 1"/><circle cx="2" cy="11" r="1"/><circle cx="12" cy="7" r="1"/></svg>',
+  group: '<svg viewBox="0 0 14 14"><rect x="2" y="2" width="10" height="10" rx="1" stroke-dasharray="2 1.6"/></svg>',
   master: '<svg viewBox="0 0 14 14" class="comp"><path d="M7 1.5L12.5 7 7 12.5 1.5 7z" fill="currentColor"/></svg>',
   instance: '<svg viewBox="0 0 14 14" class="comp"><path d="M7 1.8L12.2 7 7 12.2 1.8 7z"/></svg>',
 };
@@ -212,6 +213,7 @@ function describe(el) {
   if (role === 'master' || role === 'instance') {
     return { icon: role, name: el.getAttribute(COMPONENT_NAME) || 'Komponen', meta: role === 'master' ? 'master' : '' };
   }
+  if (el.hasAttribute('data-group')) return { icon: 'group', name: 'Group', meta: '' };
   const shape = el.getAttribute('data-shape');
   if (shape) return { icon: 'shape', name: SHAPE_LABELS[shape] ?? 'Shape', meta: 'svg' };
   if (el.getAttribute('data-vector')) return { icon: 'vector', name: 'Vector', meta: el.getAttribute('data-vector') };

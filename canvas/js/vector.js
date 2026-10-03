@@ -137,7 +137,7 @@ function finish(closed) {
   emit('structure', artboard.id);
 }
 
-function penPath(pts, closed) {
+export function penPath(pts, closed) {
   const seg = (a, b) => (a.hout || b.hin
     ? `C ${xy(a.hout ?? a)} ${xy(b.hin ?? b)} ${xy(b)}`
     : `L ${xy(b)}`);

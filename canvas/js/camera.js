@@ -2,7 +2,7 @@
 import { state, emit, isEditableTarget, DRAW_TOOLS, VECTOR_TOOLS } from './state.js';
 
 const MIN_ZOOM = 0.05;
-const MAX_ZOOM = 8;
+const MAX_ZOOM = 16; // 1600%: cukup dekat untuk memakai pixel grid
 const VIEW_KEY = 'design-canvas:view';
 
 let viewportEl;

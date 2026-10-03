@@ -1,5 +1,6 @@
 // Posisi elemen: "Ikut layout" (normal, diatur auto layout/flow) atau "Bebas" (position: absolute,
 // bisa di-drag di kanvas dan diatur lewat X/Y). Ini setara "Absolute position" di Figma.
+import { layoutParent } from './group.js';
 
 export function isFree(el) {
   const pos = el.ownerDocument.defaultView.getComputedStyle(el).position;
@@ -9,7 +10,7 @@ export function isFree(el) {
 // Jadikan bebas tanpa berpindah tempat di layar: hitung posisinya relatif ke induk.
 export function makeFree(el) {
   const doc = el.ownerDocument;
-  const parent = el.parentElement;
+  const parent = layoutParent(el); // lewati group (tidak punya kotak sendiri)
   if (doc.defaultView.getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
   const r = el.getBoundingClientRect();
   const pr = parent.getBoundingClientRect();
@@ -30,6 +31,17 @@ export function makeFlow(el) {
 export function freePosition(el) {
   const cs = el.ownerDocument.defaultView.getComputedStyle(el);
   return { left: parseFloat(el.style.left || cs.left) || 0, top: parseFloat(el.style.top || cs.top) || 0 };
+}
+
+// Rotasi elemen dalam derajat (properti CSS "rotate", berputar di titik tengahnya).
+export function rotationOf(el) {
+  const v = el.style.rotate || el.ownerDocument.defaultView.getComputedStyle(el).rotate;
+  if (!v || v === 'none') return 0;
+  const n = parseFloat(v.split(' ').at(-1));
+  if (!Number.isFinite(n)) return 0;
+  if (v.endsWith('turn')) return n * 360;
+  if (v.endsWith('rad')) return (n * 180) / Math.PI;
+  return n;
 }
 
 const round = (n) => Math.round(n * 100) / 100;

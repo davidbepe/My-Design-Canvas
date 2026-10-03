@@ -21,8 +21,12 @@ import { initCodeExport, openCode, closeCode, isCodeOpen } from './codeexport.js
 import { initGuides } from './guides.js';
 import { autoLayoutShortcut } from './autolayout.js';
 import { initVector, isDrawingVector, cancelVector } from './vector.js';
+import { initVectorEdit } from './vectoredit.js';
 import { initToolMenus } from './toolmenus.js';
+import { groupSelection, ungroupSelection } from './group.js';
+import { alignSelection, distributeSelection } from './align.js';
 import { initCanvasColor } from './canvasbg.js';
+import { initPixelGrid, updatePixelGrid, isPixelGridOn, setPixelGrid } from './pixelgrid.js';
 import {
   renderVariablesPanel, isVariablesOpen, closeVariablesTable, refreshVariablesTable,
 } from './variables.js';
@@ -42,6 +46,8 @@ initArtboards($('world'));
 initSelection(viewportEl, $('overlay'));
 initGuides($('overlay'));
 initVector($('overlay'));
+initVectorEdit($('overlay'));
+initPixelGrid($('overlay'));
 initToolMenus();
 initLayers($('layers'));
 initProperties($('props'));
@@ -123,6 +129,8 @@ on('open-tab', (name) => openPanel(name));
 on('panel', (name) => openPanel(name));
 
 // ---------- Shortcut keyboard ----------
+// Align ala Figma: Alt + A/H/D (kiri/tengah/kanan), Alt + W/V/S (atas/tengah/bawah)
+const ALIGN_KEYS = { KeyA: 'left', KeyH: 'hcenter', KeyD: 'right', KeyW: 'top', KeyV: 'vcenter', KeyS: 'bottom' };
 addEventListener('keydown', (e) => {
   if (isEditableTarget(e.target)) return;
   const mod = e.ctrlKey || e.metaKey;
@@ -135,6 +143,11 @@ addEventListener('keydown', (e) => {
   else if (mod && key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
   else if (mod && ((key === 'z' && e.shiftKey) || key === 'y')) { e.preventDefault(); redo(); }
   else if (mod && key === 'd') { e.preventDefault(); duplicateSelection(); }
+  else if (mod && key === 'g') { e.preventDefault(); (e.shiftKey ? ungroupSelection : groupSelection)(); }
+  else if (e.altKey && !mod && e.shiftKey && (e.code === 'KeyH' || e.code === 'KeyV')) {
+    e.preventDefault();
+    distributeSelection(e.code === 'KeyH' ? 'h' : 'v');
+  } else if (e.altKey && !mod && ALIGN_KEYS[e.code]) { e.preventDefault(); alignSelection(ALIGN_KEYS[e.code]); }
   else if (mod && key === 'a') { e.preventDefault(); selectAll(); }
   else if (mod || e.altKey) return;
   else if (key === 'delete' || key === 'backspace') { e.preventDefault(); deleteSelection(); }
@@ -149,6 +162,11 @@ addEventListener('keydown', (e) => {
   else if (key === 't') setTool('text');
   else if (key === 'i' && e.shiftKey) togglePanel('icons');
   else if (e.shiftKey && e.code === 'Digit2') zoomToSelection();
+  else if (e.shiftKey && e.code === 'Quote') {
+    setPixelGrid(!isPixelGridOn());
+    if (!state.selection) renderProperties();
+    showToast(`Pixel grid ${isPixelGridOn() ? 'nyala (terlihat di zoom 400%+)' : 'mati'}`);
+  }
   else if (e.key === '?' || (e.shiftKey && e.code === 'Slash')) helpEl.hidden = !helpEl.hidden;
   else if (key === 'escape' && !helpEl.hidden) helpEl.hidden = true;
   else if (key === 'escape' && activePanel && !state.selection) openPanel(null);
@@ -156,6 +174,7 @@ addEventListener('keydown', (e) => {
 
 // ---------- Reaksi terhadap perubahan ----------
 on('view', () => {
+  updatePixelGrid();
   zoomBtn.textContent = `${Math.round(state.view.zoom * 100)}%`;
   drawOverlay();
 });
@@ -185,6 +204,7 @@ on('doc', (id) => {
 });
 
 on('layout', drawOverlay);
+on('vectoredit', () => { renderProperties(); drawOverlay(); });
 on('textedit', drawOverlay);
 
 on('selection', () => {
