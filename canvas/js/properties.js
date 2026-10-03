@@ -7,11 +7,18 @@ import { changeArtboard, createArtboardWithHistory } from './actions.js';
 import { fitRect } from './camera.js';
 import { selectorOf } from './selection.js';
 import { saveNow } from './persist.js';
-import { renderTokensPanel, openTokenMenu } from './tokens.js';
+import { openTokenMenu, data as varData, tokens as tokenValues } from './tokens.js';
 import { componentOf, countInstances, goToMaster, detachInstance, renameComponent } from './components.js';
 import { openFontMenu, primaryFamily, fontFamilyValue, ensureFontInDoc } from './fonts.js';
 import { openCode } from './codeexport.js';
 import { openPreview } from './preview.js';
+import {
+  addAutoLayout, removeAutoLayout, alignmentOf, alignmentStyles, sizeModeOf, sizeModeStyles, fixedSizeCleanup,
+} from './autolayout.js';
+import { isFree, makeFree, makeFlow, freePosition } from './position.js';
+import { SHAPE_LABELS, setShapeCount } from './shapes.js';
+import { canvasColor, applyCanvasColor, CANVAS_PRESETS, DEFAULT_CANVAS } from './canvasbg.js';
+import { openColorPicker, rememberColor } from './colorpicker.js';
 
 const FRAME_PRESETS = [
   ['iPhone 16', 393, 852],
@@ -23,10 +30,6 @@ const FRAME_PRESETS = [
 ];
 
 const DISPLAYS = ['block', 'flex', 'grid', 'inline', 'inline-block', 'inline-flex', 'none'];
-const JUSTIFY = [['normal', 'Normal'], ['flex-start', 'Start'], ['center', 'Center'], ['flex-end', 'End'],
-  ['space-between', 'Space between'], ['space-around', 'Space around'], ['space-evenly', 'Space evenly']];
-const ALIGN = [['normal', 'Normal'], ['stretch', 'Stretch'], ['flex-start', 'Start'], ['center', 'Center'],
-  ['flex-end', 'End'], ['baseline', 'Baseline']];
 const BORDER_STYLES = ['none', 'solid', 'dashed', 'dotted'];
 const WEIGHTS = [['100', '100 Thin'], ['200', '200 Extra light'], ['300', '300 Light'], ['400', '400 Regular'],
   ['500', '500 Medium'], ['600', '600 Semibold'], ['700', '700 Bold'], ['800', '800 Extra bold'], ['900', '900 Black']];
@@ -43,7 +46,7 @@ export function renderProperties() {
   panel.replaceChildren();
   const ref = state.selection;
   if (state.tool === 'frame') return renderFramePresets();
-  if (!ref) return renderTokensPanel(panel);
+  if (!ref) return renderNothingSelected();
   const artboard = getArtboard(ref.artboardId);
   const el = resolve(ref);
   if (!artboard || !el) {
@@ -68,6 +71,19 @@ export function renderProperties() {
       before?.(t.el);
       if (value === '' || value == null) t.el.style.removeProperty(prop);
       else t.el.style.setProperty(prop, value);
+    }
+    artboardIds.forEach((id) => emit('edit', id));
+    if (rerender) renderProperties();
+  };
+  // Beberapa properti sekaligus, dihitung per elemen (mis. resizing yang bergantung pada induknya).
+  // Nilai null = hapus properti itu.
+  const setStyles = (stylesFor, { rerender = true } = {}) => {
+    artboardIds.forEach((id) => captureDoc(id));
+    for (const t of targets) {
+      for (const [prop, value] of Object.entries(stylesFor(t.el))) {
+        if (value == null) t.el.style.removeProperty(prop);
+        else t.el.style.setProperty(prop, value);
+      }
     }
     artboardIds.forEach((id) => emit('edit', id));
     if (rerender) renderProperties();
@@ -113,15 +129,93 @@ export function renderProperties() {
     row(s,
       numberField({ label: 'W', value: artboard.width, onCommit: sizeCommit('width') }),
       numberField({ label: 'H', value: artboard.height, onCommit: sizeCommit('height') }));
+    // Mode variabel (mis. Light/Dark) untuk artboard ini: <html data-mode="...">
+    if (varData.modes.length > 1) {
+      const root = el.ownerDocument.documentElement;
+      const current = varData.modes.find((m) => varData.slugs[m] === root.getAttribute('data-mode')) ?? varData.modes[0];
+      row(s, selectField({
+        label: 'Mode', value: current, options: varData.modes,
+        onChange: (m) => {
+          artboardIds.forEach((id) => captureDoc(id, 'Ganti mode artboard'));
+          for (const t of targets) {
+            const html = t.el.ownerDocument.documentElement;
+            if (m === varData.modes[0]) html.removeAttribute('data-mode');
+            else html.setAttribute('data-mode', varData.slugs[m]);
+          }
+          artboardIds.forEach((id) => emit('edit', id));
+        },
+      }));
+    }
   } else {
-    const s = section('Ukuran');
+    const s = section('Ukuran & resizing');
+    // Mengetik angka = ukuran tetap (Fixed), jadi Fill dari auto layout dilepas.
+    const sizeCommit = (axis) => (v) => setStyles((t) => ({ ...(/px$/.test(v) ? fixedSizeCleanup(t, axis) : {}), [axis]: v }), { rerender: false });
     row(s,
-      numberField({ label: 'W', value: px(cs.width), unit: 'px', onCommit: (v) => set('width', v) }),
-      numberField({ label: 'H', value: px(cs.height), unit: 'px', onCommit: (v) => set('height', v) }));
+      numberField({ label: 'W', value: px(cs.width), unit: 'px', onCommit: sizeCommit('width') }),
+      numberField({ label: 'H', value: px(cs.height), unit: 'px', onCommit: sizeCommit('height') }));
+    // Resizing ala Figma: Fixed (ukuran tetap), Hug (selebar isinya), Fill (mengisi ruang induk).
+    const MODES = [['fixed', 'Fixed'], ['hug', 'Hug'], ['fill', 'Fill']];
+    row(s,
+      selectField({ label: '↔', value: sizeModeOf(el, 'width'), options: MODES, onChange: (m) => setStyles((t) => sizeModeStyles(t, 'width', m)) }),
+      selectField({ label: '↕', value: sizeModeOf(el, 'height'), options: MODES, onChange: (m) => setStyles((t) => sizeModeStyles(t, 'height', m)) }));
   }
 
-  // Ikon (SVG): ukuran, warna, ketebalan garis
-  if (tag === 'svg') {
+  // Posisi: ikut layout, atau bebas (absolut) dengan X/Y dan bisa di-drag di kanvas
+  if (!isRoot) {
+    const free = isFree(el);
+    const ps = section('Posisi');
+    row(ps, segmented({
+      value: free ? 'free' : 'flow',
+      options: [['flow', 'Ikut layout'], ['free', 'Bebas']],
+      onChange: (v) => {
+        artboardIds.forEach((id) => captureDoc(id, 'Ubah posisi'));
+        for (const t of targets) (v === 'free' ? makeFree : makeFlow)(t.el);
+        artboardIds.forEach((id) => emit('edit', id));
+        renderProperties();
+      },
+    }));
+    if (free) {
+      const p = freePosition(el);
+      row(ps,
+        numberField({ label: 'X', value: round(p.left), unit: 'px', onCommit: (v) => set('left', v) }),
+        numberField({ label: 'Y', value: round(p.top), unit: 'px', onCommit: (v) => set('top', v) }));
+      ps.append(div('props-hint', 'Drag elemen ini di kanvas untuk memindahkannya. Garis merah = sejajar, garis pink = jarak sama.'));
+    }
+  }
+
+  // Shape (segitiga, polygon, bintang, garis, panah) dan vector (pen/pencil): fill & stroke
+  const shapeKind = el.getAttribute('data-shape');
+  const vectorKind = el.getAttribute('data-vector');
+  const drawnSvg = tag === 'svg' && !!(shapeKind || vectorKind);
+  if (drawnSvg) {
+    const lineLike = shapeKind === 'line' || shapeKind === 'arrow';
+    const s = section(vectorKind ? 'Vector' : SHAPE_LABELS[shapeKind] ?? 'Shape');
+    if (!lineLike) row(s, colorField({ label: 'Fill', value: cs.fill, onCommit: (v) => set('fill', v), ...tok('fill', 'color') }));
+    // Kepala panah mengikuti "color", jadi untuk garis/panah warna stroke disalin ke sana.
+    row(s, colorField({
+      label: 'Stroke', value: cs.stroke,
+      onCommit: (v) => { set('stroke', v); if (lineLike) set('color', v); },
+      linked: linkedToken(el, 'stroke'), tokenGroup: 'color',
+      onToken: (v) => { set('stroke', v); if (lineLike) set('color', v); renderProperties(); },
+    }));
+    row(s,
+      numberField({ label: 'Tebal', value: px(cs.strokeWidth), unit: 'px', step: 0.5, onCommit: (v) => set('stroke-width', v) }),
+      numberField({ label: 'Opacity', value: round(Number(cs.opacity) * 100), step: 5, onCommit: (_css, n) => {
+        if (Number.isFinite(n)) set('opacity', String(Math.min(100, Math.max(0, n)) / 100));
+      } }));
+    if (shapeKind === 'polygon' || shapeKind === 'star') {
+      row(s, numberField({
+        label: shapeKind === 'star' ? 'Titik' : 'Sisi', value: Number(el.getAttribute('data-count')) || 5,
+        onCommit: (_css, n) => {
+          if (!Number.isFinite(n)) return;
+          artboardIds.forEach((id) => captureDoc(id, 'Ubah jumlah sisi'));
+          for (const t of targets) if (t.el.getAttribute('data-shape') === shapeKind) setShapeCount(t.el, n);
+          artboardIds.forEach((id) => emit('edit', id));
+        },
+      }));
+    }
+  } else if (tag === 'svg') {
+    // Ikon (SVG): ukuran, warna, ketebalan garis
     const s = section('Ikon');
     row(s,
       numberField({ label: 'Size', value: px(cs.width), unit: 'px', onCommit: (v) => {
@@ -134,41 +228,56 @@ export function renderProperties() {
     row(s, colorField({ value: cs.color, onCommit: (v) => set('color', v), ...tok('color', 'color') }));
   }
 
-  // Layout (auto-layout = flexbox)
-  const layout = section('Layout');
-  row(layout, selectField({ label: 'Display', value: cs.display, options: DISPLAYS, onChange: (v) => set('display', v, { rerender: true }) }));
+  // Auto layout (= CSS flexbox), dengan kontrol ala Figma. SVG tidak punya isi untuk disusun.
+  if (tag !== 'svg') renderAutoLayout();
+  function renderAutoLayout() {
   const isFlex = cs.display.includes('flex');
   const isGrid = cs.display.includes('grid');
-  if (isFlex) {
-    row(layout, segmented({
-      value: cs.flexDirection.startsWith('column') ? 'column' : 'row',
-      options: [['row', '→ Horizontal'], ['column', '↓ Vertikal']],
+  const refs = targets.map((t) => t.ref);
+  const al = section('Auto layout', isFlex
+    ? { label: '−', title: 'Hapus auto layout', onClick: () => removeAutoLayout(refs) }
+    : { label: '+', title: 'Tambah auto layout (Shift+A)', onClick: () => addAutoLayout(refs) });
+  const gapField = () => numberField({
+    label: 'Gap', value: px(cs.rowGap === 'normal' ? '0px' : cs.rowGap), unit: 'px',
+    onCommit: (v) => set('gap', v), ...tok('gap', 'space'),
+  });
+  if (!isFlex) {
+    al.append(div('props-hint', 'Klik + (atau Shift+A) supaya isi tersusun otomatis: arah, jarak antar-elemen, dan perataan diatur dari sini.'));
+    if (isGrid) row(al, gapField());
+  } else {
+    const isRow = cs.flexDirection.startsWith('row');
+    row(al, segmented({
+      value: isRow ? 'row' : 'column',
+      options: [['column', '↓ Vertikal'], ['row', '→ Horizontal']],
       onChange: (v) => set('flex-direction', v, { rerender: true }),
     }));
-    row(layout,
-      selectField({ label: 'Justify', value: cs.justifyContent, options: JUSTIFY, onChange: (v) => set('justify-content', v) }),
-      selectField({ label: 'Align', value: cs.alignItems, options: ALIGN, onChange: (v) => set('align-items', v) }));
+    // Kotak perataan 3×3 di kiri, gap & opsi di kanan (seperti panel Figma).
+    const autoGap = cs.justifyContent === 'space-between';
+    const grid = alignGrid(alignmentOf(cs), (h, v) => setStyles((t) => alignmentStyles(t.ownerDocument.defaultView.getComputedStyle(t), h, v)));
+    const side = div('al-col');
+    side.append(gapField());
+    const opts = div('al-opts');
+    opts.append(toggleButton('Auto', autoGap, 'Jarak dibagi rata (space-between)', () => set('justify-content', autoGap ? 'flex-start' : 'space-between', { rerender: true })));
+    if (isRow) {
+      const wrapped = cs.flexWrap === 'wrap';
+      opts.append(toggleButton('Wrap', wrapped, 'Pindah ke baris baru kalau tidak muat', () => set('flex-wrap', wrapped ? 'nowrap' : 'wrap', { rerender: true })));
+    }
+    side.append(opts);
+    const layoutRow = div('al-row');
+    layoutRow.append(grid, side);
+    al.append(layoutRow);
   }
-  if (isFlex || isGrid) {
-    row(layout, numberField({
-      label: 'Gap', value: px(cs.rowGap === 'normal' ? '0px' : cs.rowGap), unit: 'px',
-      onCommit: (v) => set('gap', v), ...tok('gap', 'space'),
-    }));
-  }
-
-  // Spacing
-  const spacing = section('Padding & margin');
-  for (const kind of ['padding', 'margin']) {
-    row(spacing, ...['top', 'right', 'bottom', 'left'].map((side, i) => {
-      const prop = `${kind}-${side}`;
-      return numberField({
-        label: kind[0].toUpperCase() + '↑→↓←'[i], value: px(cs.getPropertyValue(prop)), unit: 'px',
-        onCommit: (v) => set(prop, v), ...tok(prop, 'space'),
-      });
-    }));
+  row(al, selectField({ label: 'Display', value: cs.display, options: DISPLAYS, onChange: (v) => set('display', v, { rerender: true }) }));
   }
 
-  // Fill
+  // Spacing: diagram kotak ala Webflow (margin di luar, padding di dalam, ukuran di tengah)
+  const spacing = section('Spacing');
+  spacing.append(boxModel({ el, cs, set }));
+  spacing.append(div('props-hint', 'Padding = jarak isi ke tepi elemen. Margin = jarak elemen ke elemen lain. Klik angka untuk mengubah (bisa ketik nama variabel, mis. space-4), atau drag ke kiri/kanan.'));
+
+  // Fill & Border mengatur kotak elemen; untuk shape/vector SVG sudah diganti bagian Shape di atas.
+  if (!drawnSvg) renderFillBorder();
+  function renderFillBorder() {
   const fill = section('Fill');
   row(fill, colorField({ value: cs.backgroundColor, onCommit: (v) => set('background-color', v), ...tok('background-color', 'color') }));
   row(fill, numberField({ label: 'Opacity', value: round(Number(cs.opacity) * 100), step: 5, onCommit: (_css, n) => {
@@ -192,10 +301,20 @@ export function renderProperties() {
   if (cs.borderTopStyle !== 'none') {
     row(border, colorField({ value: cs.borderTopColor, onCommit: (v) => set('border-color', v), ...tok('border-color', 'color') }));
   }
-  row(border, numberField({
-    label: 'Radius', value: px(cs.borderTopLeftRadius), unit: 'px',
-    onCommit: (v) => set('border-radius', v), ...tok('border-radius', 'radius'),
-  }));
+  // Radius. Seperti frame di Figma, isi frame ikut terpotong mengikuti sudutnya ("Clip isi"):
+  // otomatis dinyalakan saat radius diberikan ke elemen yang punya isi.
+  const autoClip = (t, n) => (!isRoot && n > 0 && t.children.length
+    && t.ownerDocument.defaultView.getComputedStyle(t).overflow === 'visible' ? { overflow: 'hidden' } : {});
+  const clipped = ['hidden', 'clip'].includes(cs.overflow);
+  row(border,
+    numberField({
+      label: 'Radius', value: px(cs.borderTopLeftRadius), unit: 'px',
+      onCommit: (v, n) => setStyles((t) => ({ 'border-radius': v, ...autoClip(t, n) }), { rerender: true }),
+      ...tok('border-radius', 'radius'),
+    }),
+    ...(isRoot ? [] : [toggleButton('Clip isi', clipped, 'Potong isi yang keluar dari kotak/sudut elemen (Clip content di Figma)',
+      () => set('overflow', clipped ? 'visible' : 'hidden', { rerender: true }))]));
+  }
 
   // Teks: tampil kalau elemen punya teks sendiri, atau artboard (untuk font dasar).
   if (tag !== 'svg' && (isRoot || hasOwnText(el))) {
@@ -232,6 +351,46 @@ export function renderProperties() {
   row(fx, textField({ label: 'Shadow', value: cs.boxShadow, onCommit: (v) => set('box-shadow', v), ...tok('box-shadow', 'shadow') }));
 
   renderExport();
+}
+
+// ---------- Tidak ada yang dipilih: pengaturan kanvas ----------
+
+function renderNothingSelected() {
+  // Warna latar kanvas (area di belakang artboard), seperti "Page" di Figma.
+  const s = section('Kanvas');
+  const apply = (color) => {
+    if (!applyCanvasColor(color)) return toast('Warna tidak dikenali. Contoh: #2c2c2c');
+    renderProperties();
+  };
+  // Dari color picker: diterapkan langsung tanpa membangun ulang panel di setiap gerakan.
+  row(s, colorField({
+    label: 'Warna', value: canvasColor(),
+    onCommit: (color) => { if (!applyCanvasColor(color)) toast('Warna tidak dikenali. Contoh: #2c2c2c'); },
+  }));
+  const presets = div('canvas-presets');
+  for (const [color, name] of CANVAS_PRESETS) {
+    const btn = document.createElement('button');
+    btn.className = 'canvas-swatch';
+    btn.classList.toggle('on', color === canvasColor());
+    btn.style.background = color;
+    btn.title = name;
+    btn.addEventListener('click', () => { rememberColor(color); apply(color); });
+    presets.append(btn);
+  }
+  const reset = document.createElement('button');
+  reset.className = 'small-btn';
+  reset.textContent = 'Reset';
+  reset.title = 'Kembali ke warna bawaan';
+  reset.addEventListener('click', () => apply(DEFAULT_CANVAS));
+  presets.append(reset);
+  s.append(presets);
+
+  panel.append(div('props-empty', 'Pilih elemen di kanvas atau di panel Layers untuk mengedit propertinya.'));
+  const open = document.createElement('button');
+  open.className = 'small-btn props-cta';
+  open.textContent = 'Kelola variabel (design system)';
+  open.addEventListener('click', () => emit('open-tab', 'variables'));
+  panel.append(open);
 }
 
 // ---------- Ekspor PNG ----------
@@ -406,28 +565,37 @@ function numberField({ label, value, unit = '', step = 1, onCommit, linked, toke
   return wrap;
 }
 
-function colorField({ value, onCommit, linked, tokenGroup, onToken }) {
+function colorField({ label, value, onCommit, linked, tokenGroup, onToken }) {
   const { hex, alpha } = parseColor(value);
   const wrap = div('field');
-  const swatch = document.createElement('input');
-  swatch.type = 'color';
-  swatch.className = 'swatch';
-  swatch.value = hex;
+  if (label) wrap.append(span('field-label', label));
+  // Kotak warna: klik untuk membuka color picker ala Figma (colorpicker.js).
+  const swatch = document.createElement('button');
+  swatch.className = 'swatch-btn';
+  swatch.title = 'Pilih warna';
+  swatch.style.setProperty('--sw', value === 'none' ? 'transparent' : value);
   const input = document.createElement('input');
   input.className = 'field-input';
   input.spellcheck = false;
   input.style.paddingLeft = '8px';
-  input.value = alpha === 0 ? 'transparent' : alpha < 1 ? value : hex.toUpperCase();
+  input.value = value === 'none' ? 'none' : alpha === 0 ? 'transparent' : alpha < 1 ? value : hex.toUpperCase();
   showLinked(input, linked);
 
-  swatch.addEventListener('input', () => {
-    input.value = swatch.value.toUpperCase();
-    input.classList.remove('linked');
-    onCommit(swatch.value);
-  });
+  swatch.addEventListener('click', () => openColorPicker(swatch, {
+    value: getComputedColor(swatch),
+    // Perubahan langsung diterapkan selama di-drag (undo menggabungkannya jadi satu langkah).
+    onInput: (css) => {
+      swatch.style.setProperty('--sw', css);
+      input.value = css.startsWith('#') ? css.toUpperCase() : css;
+      input.classList.remove('linked');
+      onCommit(css);
+    },
+    onToken: onToken && ((v) => onToken(v)),
+  }));
   input.addEventListener('change', () => {
     onCommit(input.value.trim());
-    if (/^#[0-9a-f]{6}$/i.test(input.value.trim())) swatch.value = input.value.trim();
+    rememberColor(input.value.trim()); // masuk "Warna terakhir" di color picker
+    swatch.style.setProperty('--sw', input.value.trim());
   });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
 
@@ -501,11 +669,141 @@ function textArea({ value, onCommit }) {
 
 // ---------- Helper ----------
 
-function section(title) {
+// action (opsional): tombol kecil di kanan judul, mis. + untuk menambah auto layout.
+function section(title, action) {
   const s = div('prop-section');
-  s.append(div('prop-title', title));
+  const head = div('prop-title token-title');
+  head.append(span('', title));
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'icon-text-btn';
+    btn.textContent = action.label;
+    btn.title = action.title;
+    btn.addEventListener('click', action.onClick);
+    head.append(btn);
+  }
+  s.append(head);
   panel.append(s);
   return s;
+}
+
+// Diagram spacing ala Webflow: kotak luar = margin, kotak dalam = padding, tengah = ukuran elemen.
+// Setiap angka berada di sisi yang diaturnya. Klik untuk mengetik, drag kiri/kanan untuk menggeser nilai.
+function boxModel({ el, cs, set }) {
+  const r = el.getBoundingClientRect();
+  const margin = div('bm-margin');
+  const padding = div('bm-padding');
+  margin.append(span('bm-caption', 'MARGIN'));
+  padding.append(span('bm-caption', 'PADDING'));
+  padding.append(div('bm-content', `${round(r.width)} × ${round(r.height)}`));
+  for (const side of ['top', 'right', 'bottom', 'left']) {
+    margin.append(spacingValue({ el, cs, set, prop: `margin-${side}`, side }));
+    padding.append(spacingValue({ el, cs, set, prop: `padding-${side}`, side }));
+  }
+  margin.append(padding);
+  const box = div('box-model');
+  box.append(margin);
+  return box;
+}
+
+function spacingValue({ el, cs, set, prop, side }) {
+  const computed = px(cs.getPropertyValue(prop));
+  const linked = linkedToken(el, prop);
+  const btn = document.createElement('button');
+  btn.className = `bm-value bm-${side}`;
+  btn.textContent = linked ? (px(tokenValues[linked] ?? '') || linked) : computed;
+  btn.title = `${prop}${linked ? `: var(--${linked}) = ${tokenValues[linked]}` : ''}`;
+  btn.classList.toggle('linked', !!linked);
+  btn.classList.toggle('zero', !linked && Number(computed) === 0);
+
+  // Tekan lalu geser = ubah nilai; tekan lalu lepas tanpa geser = ketik nilai.
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    btn.setPointerCapture(e.pointerId);
+    const base = parseFloat(computed) || 0;
+    let moved = false;
+    const move = (ev) => {
+      const dx = ev.clientX - e.clientX;
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      const next = Math.max(prop.startsWith('padding') ? 0 : -999, round(base + Math.round(dx / 2) * (ev.shiftKey ? 10 : 1)));
+      btn.textContent = next;
+      btn.classList.remove('linked', 'zero');
+      set(prop, `${next}px`);
+    };
+    const up = () => {
+      btn.removeEventListener('pointermove', move);
+      btn.removeEventListener('pointerup', up);
+      if (moved) renderProperties();
+      else editSpacing(btn, { prop, side, set, value: linked ?? computed });
+    };
+    btn.addEventListener('pointermove', move);
+    btn.addEventListener('pointerup', up);
+  });
+  return btn;
+}
+
+function editSpacing(btn, { prop, side, set, value }) {
+  const input = document.createElement('input');
+  input.className = `bm-input bm-${side}`;
+  input.value = value;
+  input.spellcheck = false;
+  btn.hidden = true;
+  btn.after(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const commit = (save) => {
+    if (done) return;
+    done = true;
+    const raw = input.value.trim();
+    if (!save || raw === String(value)) { input.remove(); btn.hidden = false; return; }
+    // Angka = px, nama variabel = var(--nama), kosong = hapus, selain itu nilai CSS apa adanya (mis. auto).
+    let css = raw;
+    if (raw === '') css = '';
+    else if (/^-?\d*\.?\d+$/.test(raw)) css = `${raw}px`;
+    else if (tokenValues[raw] !== undefined) css = `var(--${raw})`;
+    else if (tokenValues[raw.replace(/^--/, '')] !== undefined) css = `var(--${raw.replace(/^--/, '')})`;
+    set(prop, css, { rerender: true });
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') commit(true);
+    else if (e.key === 'Escape') commit(false);
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const n = (parseFloat(input.value) || 0) + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 10 : 1);
+      input.value = n;
+      set(prop, `${n}px`);
+    }
+  });
+  input.addEventListener('blur', () => commit(true));
+}
+
+// Kotak perataan 3×3: klik titik untuk menaruh isi di posisi itu.
+function alignGrid(current, onPick) {
+  const NAMES = { start: ['kiri', 'atas'], center: ['tengah', 'tengah'], end: ['kanan', 'bawah'] };
+  const grid = div('align-grid');
+  for (const v of ['start', 'center', 'end']) {
+    for (const h of ['start', 'center', 'end']) {
+      const cell = document.createElement('button');
+      cell.className = 'align-cell';
+      cell.classList.toggle('active', current.h === h && current.v === v);
+      cell.title = `Rata ${NAMES[v][1]} ${NAMES[h][0]}`;
+      cell.addEventListener('click', () => onPick(h, v));
+      grid.append(cell);
+    }
+  }
+  return grid;
+}
+
+function toggleButton(label, on, title, onClick) {
+  const btn = document.createElement('button');
+  btn.className = 'small-btn';
+  btn.classList.toggle('on', on);
+  btn.textContent = label;
+  btn.title = title;
+  btn.addEventListener('click', onClick);
+  return btn;
 }
 
 function row(sectionEl, ...fields) {
@@ -532,7 +830,13 @@ function round(n) {
   return Math.round(n * 100) / 100;
 }
 
+// Warna yang sedang ditampilkan kotak warna (nilai --sw).
+function getComputedColor(swatch) {
+  return swatch.style.getPropertyValue('--sw') || '#000000';
+}
+
 function parseColor(value) {
+  if (/^#[0-9a-f]{6}$/i.test(value)) return { hex: value.toLowerCase(), alpha: 1 };
   const m = value.match(/rgba?\(([^)]+)\)/);
   if (!m) return { hex: '#000000', alpha: 1 };
   const [r, g, b, a = 1] = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);

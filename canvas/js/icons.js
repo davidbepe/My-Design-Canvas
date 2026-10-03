@@ -1,32 +1,29 @@
-// Popup pemilih ikon (pustaka Lucide). Klik ikon untuk menyisipkannya ke frame/elemen terpilih.
+// Panel Ikon (pustaka Lucide) di sidebar kedua. Klik ikon untuk menyisipkannya ke frame/elemen terpilih.
+import { emit } from './state.js';
 import { insertIcon } from './clipboard.js';
 
-let popup;
 let input;
 let grid;
 let timer;
 let lastQuery = null;
 
-export function initIcons(popupEl) {
-  popup = popupEl;
-  input = popup.querySelector('input');
-  grid = popup.querySelector('.icon-grid');
+export function initIcons(paneEl) {
+  input = paneEl.querySelector('input');
+  grid = paneEl.querySelector('.icon-grid');
   input.addEventListener('input', () => {
     clearTimeout(timer);
     timer = setTimeout(search, 150);
   });
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.stopPropagation(); toggleIcons(false); }
+    if (e.key === 'Escape') { e.stopPropagation(); emit('panel', null); }
   });
 }
 
-export function toggleIcons(show = popup.hidden) {
-  popup.hidden = !show;
-  if (show) {
-    input.focus();
-    input.select();
-    if (lastQuery === null) search();
-  }
+// Dipanggil saat panel Ikon dibuka.
+export function showIcons() {
+  input.focus();
+  input.select();
+  if (lastQuery === null) search();
 }
 
 async function search() {

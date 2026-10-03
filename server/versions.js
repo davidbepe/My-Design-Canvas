@@ -3,7 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DESIGNS_DIR, MANIFEST_FILE, listArtboards } from './store.js';
-import { TOKENS_FILE } from './tokens.js';
+import { TOKENS_FILE, VARIABLES_FILE } from './tokens.js';
 
 const VERSIONS_DIR = path.join(DESIGNS_DIR, '.versions');
 const INDEX_PATH = path.join(VERSIONS_DIR, 'versions.json');
@@ -28,7 +28,7 @@ export async function saveVersion(name) {
   const id = createdAt.replace(/[:.]/g, '-');
   const dir = path.join(VERSIONS_DIR, id);
   await fs.mkdir(dir, { recursive: true });
-  const files = [MANIFEST_FILE, TOKENS_FILE, ...artboards.map((a) => a.file)];
+  const files = [MANIFEST_FILE, TOKENS_FILE, VARIABLES_FILE, ...artboards.map((a) => a.file)];
   for (const file of files) {
     await fs.copyFile(path.join(DESIGNS_DIR, file), path.join(dir, file)).catch((err) => {
       if (err.code !== 'ENOENT') throw err;
@@ -57,6 +57,7 @@ export async function restoreVersion(id) {
   }
   // Isi HTML & token dulu, daftar artboard terakhir, supaya kanvas memuat isi yang sudah benar.
   for (const a of snapshot) await copyInto(path.join(dir, a.file), path.join(DESIGNS_DIR, a.file));
+  await copyInto(path.join(dir, VARIABLES_FILE), path.join(DESIGNS_DIR, VARIABLES_FILE));
   await copyInto(path.join(dir, TOKENS_FILE), path.join(DESIGNS_DIR, TOKENS_FILE));
   await copyInto(path.join(dir, MANIFEST_FILE), path.join(DESIGNS_DIR, MANIFEST_FILE));
   return { restored: version, backup };

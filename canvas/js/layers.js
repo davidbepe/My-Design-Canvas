@@ -5,6 +5,7 @@ import {
   HIDDEN_TAGS, CONTAINER_TAGS, COMPONENT_ROLE, COMPONENT_NAME,
 } from './state.js';
 import { recordDoc } from './history.js';
+import { SHAPE_LABELS } from './shapes.js';
 
 const ICONS = {
   artboard: '<svg viewBox="0 0 14 14"><path d="M4.5 1.5v11M9.5 1.5v11M1.5 4.5h11M1.5 9.5h11"/></svg>',
@@ -12,6 +13,8 @@ const ICONS = {
   text: '<svg viewBox="0 0 14 14"><path d="M3 3.5h8M7 3.5v8"/></svg>',
   image: '<svg viewBox="0 0 14 14"><rect x="2" y="2.5" width="10" height="9" rx="1"/><path d="M2.5 10l3-3 2.5 2.5 1.5-1.5 2 2"/></svg>',
   input: '<svg viewBox="0 0 14 14"><rect x="1.5" y="4" width="11" height="6" rx="1"/><path d="M4 5.8v2.4"/></svg>',
+  shape: '<svg viewBox="0 0 14 14"><path d="M7 2l5 9H2z"/></svg>',
+  vector: '<svg viewBox="0 0 14 14"><path d="M2 11c2-1 2.5-5 5-5s3 3 5 1"/><circle cx="2" cy="11" r="1"/><circle cx="12" cy="7" r="1"/></svg>',
   master: '<svg viewBox="0 0 14 14" class="comp"><path d="M7 1.5L12.5 7 7 12.5 1.5 7z" fill="currentColor"/></svg>',
   instance: '<svg viewBox="0 0 14 14" class="comp"><path d="M7 1.8L12.2 7 7 12.2 1.8 7z"/></svg>',
 };
@@ -208,6 +211,12 @@ function describe(el) {
   const role = el.getAttribute(COMPONENT_ROLE);
   if (role === 'master' || role === 'instance') {
     return { icon: role, name: el.getAttribute(COMPONENT_NAME) || 'Komponen', meta: role === 'master' ? 'master' : '' };
+  }
+  const shape = el.getAttribute('data-shape');
+  if (shape) return { icon: 'shape', name: SHAPE_LABELS[shape] ?? 'Shape', meta: 'svg' };
+  if (el.getAttribute('data-vector')) return { icon: 'vector', name: 'Vector', meta: el.getAttribute('data-vector') };
+  if (tag === 'div' && (el.classList.contains('rect') || el.classList.contains('ellipse'))) {
+    return { icon: 'shape', name: el.classList.contains('ellipse') ? 'Ellipse' : 'Rectangle', meta: 'div' };
   }
   if (['img', 'svg', 'picture', 'video', 'canvas'].includes(tag)) {
     const label = el.getAttribute('aria-label') || el.getAttribute('alt') || el.id || el.classList[0] || tag;

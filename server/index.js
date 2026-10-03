@@ -15,7 +15,9 @@ import {
 } from './store.js';
 import { registerTools } from './mcp-tools.js';
 import { closeBrowser, screenshotArtboard } from './renderer.js';
-import { TOKENS_FILE, TOKEN_NAME, GROUPS, ensureTokens, readTokens, writeTokens } from './tokens.js';
+import {
+  TOKENS_FILE, TOKEN_NAME, GROUP_TYPES, ensureTokens, readVariables, writeVariables, modeSlug,
+} from './tokens.js';
 import { searchIcons, iconSvg } from './icons.js';
 import { GOOGLE_FONTS } from './fonts.js';
 import { listVersions, saveVersion, restoreVersion, deleteVersion } from './versions.js';
@@ -112,13 +114,24 @@ app.delete('/api/versions/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/tokens', async (_req, res) => res.json({ tokens: await readTokens(), groups: GROUPS }));
-
-const TokensBody = z.object({
-  tokens: z.record(z.string().regex(TOKEN_NAME), z.string().regex(/^[^;{}]+$/)),
+app.get('/api/tokens', async (_req, res) => {
+  const data = await readVariables();
+  res.json({ ...data, slugs: Object.fromEntries(data.modes.map((m) => [m, modeSlug(m)])) });
 });
-app.put('/api/tokens', express.json(), async (req, res) => {
-  await writeTokens(TokensBody.parse(req.body).tokens);
+
+const TokenValue = z.string().max(500).regex(/^[^;{}]*$/, 'Nilai tidak boleh mengandung ; { }');
+const VariablesBody = z.object({
+  modes: z.array(z.string().trim().min(1).max(40)).min(1).max(12)
+    .refine((m) => new Set(m.map(modeSlug)).size === m.length, 'Nama mode harus berbeda'),
+  groups: z.array(z.object({
+    id: z.string().regex(/^[a-z0-9]+$/),
+    name: z.string().trim().min(1).max(60),
+    type: z.enum(GROUP_TYPES),
+  })),
+  tokens: z.record(z.string().regex(TOKEN_NAME), z.record(z.string(), TokenValue)),
+});
+app.put('/api/tokens', express.json({ limit: '2mb' }), async (req, res) => {
+  await writeVariables(VariablesBody.parse(req.body));
   res.json({ ok: true });
 });
 

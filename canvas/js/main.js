@@ -1,9 +1,9 @@
 // Titik masuk editor: menghubungkan semua modul dan koneksi live ke server.
 import {
-  state, on, setSelectionList, setHover, setTool, resolve, getArtboard, isEditableTarget, docOf,
+  state, on, setSelectionList, setHover, setTool, resolve, getArtboard, isEditableTarget, docOf, VECTOR_TOOLS,
 } from './state.js';
 import { initCamera, fitAll, fitRect, zoomCenter, restoreView, updateCursor } from './camera.js';
-import { initArtboards, renderArtboards, reloadArtboard } from './artboards.js';
+import { initArtboards, renderArtboards, reloadArtboard, syncArtboardCorners } from './artboards.js';
 import { initSelection, drawOverlay, describeSelection, rectOf } from './selection.js';
 import { initLayers, renderLayers, highlightLayers } from './layers.js';
 import { initProperties, renderProperties } from './properties.js';
@@ -11,7 +11,7 @@ import { scheduleSave, retryFailed, hasUnsaved } from './persist.js';
 import { undo, redo, canUndo, canRedo } from './history.js';
 import { duplicateSelection, deleteSelection, selectAll } from './actions.js';
 import { initClipboard } from './clipboard.js';
-import { initIcons, toggleIcons } from './icons.js';
+import { initIcons, showIcons } from './icons.js';
 import { loadTokens, refreshArtboardTokens, applyFontImports } from './tokens.js';
 import { initComponents, createComponent, renderComponentsPanel } from './components.js';
 import { loadFonts } from './fonts.js';
@@ -19,6 +19,13 @@ import { renderVersionsPanel } from './versions.js';
 import { initPreview, openPreview, closePreview, isPreviewOpen } from './preview.js';
 import { initCodeExport, openCode, closeCode, isCodeOpen } from './codeexport.js';
 import { initGuides } from './guides.js';
+import { autoLayoutShortcut } from './autolayout.js';
+import { initVector, isDrawingVector, cancelVector } from './vector.js';
+import { initToolMenus } from './toolmenus.js';
+import { initCanvasColor } from './canvasbg.js';
+import {
+  renderVariablesPanel, isVariablesOpen, closeVariablesTable, refreshVariablesTable,
+} from './variables.js';
 
 const $ = (id) => document.getElementById(id);
 const viewportEl = $('viewport');
@@ -29,10 +36,13 @@ const helpEl = $('help');
 const toastEl = $('toast');
 const offlineEl = $('offline');
 
+initCanvasColor(); // warna kanvas pilihan user (tersimpan di browser)
 initCamera(viewportEl, $('world'));
 initArtboards($('world'));
 initSelection(viewportEl, $('overlay'));
 initGuides($('overlay'));
+initVector($('overlay'));
+initToolMenus();
 initLayers($('layers'));
 initProperties($('props'));
 initClipboard(viewportEl);
@@ -43,6 +53,7 @@ initCodeExport($('code'));
 
 // ---------- Toolbar ----------
 on('tool', () => {
+  if (isDrawingVector() && !VECTOR_TOOLS.has(state.tool)) cancelVector(); // ganti tool di tengah menggambar
   for (const btn of document.querySelectorAll('[data-tool]')) btn.classList.toggle('active', btn.dataset.tool === state.tool);
   updateCursor();
   setHover(null);
@@ -55,8 +66,7 @@ $('fit').addEventListener('click', fitAll);
 zoomBtn.addEventListener('click', () => zoomCenter(1));
 $('help-btn').addEventListener('click', () => { helpEl.hidden = !helpEl.hidden; });
 $('help-close').addEventListener('click', () => { helpEl.hidden = true; });
-$('icons-btn').addEventListener('click', () => toggleIcons());
-$('icons-close').addEventListener('click', () => toggleIcons(false));
+$('icons-btn').addEventListener('click', () => togglePanel('icons'));
 $('preview-btn').addEventListener('click', openPreview);
 $('code-btn').addEventListener('click', openCode);
 
@@ -65,24 +75,52 @@ function zoomToSelection() {
   if (rect) fitRect(rect);
 }
 
-// ---------- Tab panel kiri: Layers / Komponen / Versi ----------
-const TAB_KEY = 'design-canvas:tab';
-let activeTab = 'layers';
-try { activeTab = localStorage.getItem(TAB_KEY) || 'layers'; } catch {}
+// ---------- Rail kiri ala Webflow ----------
+// Layers menempel (bisa disembunyikan); Komponen/Variabel/Ikon/Versi terbuka sebagai sidebar kedua.
+const PANEL_TITLES = { components: 'Komponen', variables: 'Variabel', icons: 'Ikon', versions: 'Versi' };
+const LAYERS_KEY = 'design-canvas:layers-hidden';
+const flyoutEl = $('flyout');
+let activePanel = null;
 
-function setTab(tab) {
-  activeTab = tab;
-  try { localStorage.setItem(TAB_KEY, tab); } catch {}
-  for (const btn of document.querySelectorAll('[data-tab]')) btn.classList.toggle('on', btn.dataset.tab === tab);
-  for (const pane of document.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== tab;
+function openPanel(name) {
+  activePanel = PANEL_TITLES[name] ? name : null;
+  flyoutEl.hidden = !activePanel;
+  for (const btn of document.querySelectorAll('#rail [data-panel]')) {
+    if (btn.dataset.panel !== 'layers') btn.classList.toggle('on', btn.dataset.panel === activePanel);
+  }
+  for (const pane of flyoutEl.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== activePanel;
+  if (!activePanel) return;
+  flyoutEl.querySelector('.flyout-title').textContent = PANEL_TITLES[activePanel];
   renderSidePanel();
+  if (activePanel === 'icons') showIcons();
 }
-for (const btn of document.querySelectorAll('[data-tab]')) btn.addEventListener('click', () => setTab(btn.dataset.tab));
+
+function togglePanel(name) {
+  openPanel(activePanel === name ? null : name);
+}
+
+function setLayersHidden(hidden) {
+  $('app').classList.toggle('layers-hidden', hidden);
+  document.querySelector('#rail [data-panel="layers"]').classList.toggle('on', !hidden);
+  try { localStorage.setItem(LAYERS_KEY, hidden ? '1' : ''); } catch {}
+}
+
+for (const btn of document.querySelectorAll('#rail [data-panel]')) {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.panel === 'layers') setLayersHidden(!$('app').classList.contains('layers-hidden'));
+    else togglePanel(btn.dataset.panel);
+  });
+}
+flyoutEl.querySelector('.flyout-close').addEventListener('click', () => openPanel(null));
+try { setLayersHidden(localStorage.getItem(LAYERS_KEY) === '1'); } catch {}
 
 function renderSidePanel() {
-  if (activeTab === 'components') renderComponentsPanel($('components'));
-  if (activeTab === 'versions') renderVersionsPanel($('versions'));
+  if (activePanel === 'components') renderComponentsPanel($('components'));
+  if (activePanel === 'variables') renderVariablesPanel($('variables'));
+  if (activePanel === 'versions') renderVersionsPanel($('versions'));
 }
+on('open-tab', (name) => openPanel(name));
+on('panel', (name) => openPanel(name));
 
 // ---------- Shortcut keyboard ----------
 addEventListener('keydown', (e) => {
@@ -91,7 +129,8 @@ addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase();
   if (key === 'escape' && isPreviewOpen()) return closePreview();
   if (key === 'escape' && isCodeOpen()) return closeCode();
-  if (isPreviewOpen() || isCodeOpen()) return; // shortcut kanvas nonaktif selama jendela modal terbuka
+  if (key === 'escape' && isVariablesOpen()) return closeVariablesTable();
+  if (isPreviewOpen() || isCodeOpen() || isVariablesOpen()) return; // shortcut kanvas nonaktif selama jendela modal terbuka
   if (mod && e.altKey && key === 'k') { e.preventDefault(); createComponent(); }
   else if (mod && key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
   else if (mod && ((key === 'z' && e.shiftKey) || key === 'y')) { e.preventDefault(); redo(); }
@@ -99,16 +138,20 @@ addEventListener('keydown', (e) => {
   else if (mod && key === 'a') { e.preventDefault(); selectAll(); }
   else if (mod || e.altKey) return;
   else if (key === 'delete' || key === 'backspace') { e.preventDefault(); deleteSelection(); }
+  else if (key === 'a' && e.shiftKey) autoLayoutShortcut();
   else if (key === 'v') setTool('select');
   else if (key === 'h') setTool('hand');
   else if (key === 'f') setTool('frame');
   else if (key === 'r') setTool('rect');
+  else if (key === 'o') setTool('ellipse');
+  else if (key === 'l') setTool(e.shiftKey ? 'arrow' : 'line');
+  else if (key === 'p') setTool(e.shiftKey ? 'pencil' : 'pen');
   else if (key === 't') setTool('text');
-  else if (key === 'i' && e.shiftKey) toggleIcons();
+  else if (key === 'i' && e.shiftKey) togglePanel('icons');
   else if (e.shiftKey && e.code === 'Digit2') zoomToSelection();
   else if (e.key === '?' || (e.shiftKey && e.code === 'Slash')) helpEl.hidden = !helpEl.hidden;
   else if (key === 'escape' && !helpEl.hidden) helpEl.hidden = true;
-  else if (key === 'escape' && !$('icons').hidden) toggleIcons(false);
+  else if (key === 'escape' && activePanel && !state.selection) openPanel(null);
 });
 
 // ---------- Reaksi terhadap perubahan ----------
@@ -129,6 +172,7 @@ on('artboards', () => {
 // Isi artboard selesai dimuat (pertama kali, setelah Claude mengubahnya, atau setelah undo).
 on('doc', (id) => {
   applyFontImports(docOf(id)); // undo mengganti isi dokumen, jadi pasang lagi link font sementara
+  syncArtboardCorners(id);
   if (state.selected.some((r) => r.artboardId === id)) {
     const valid = state.selected.filter((r) => resolve(r)); // elemen terpilih yang masih ada
     if (valid.length !== state.selected.length) return setSelectionList(valid);
@@ -137,7 +181,7 @@ on('doc', (id) => {
   }
   renderLayers();
   drawOverlay();
-  if (activeTab === 'components') renderSidePanel();
+  if (activePanel === 'components') renderSidePanel();
 });
 
 on('layout', drawOverlay);
@@ -148,7 +192,7 @@ on('selection', () => {
   renderProperties();
   drawOverlay();
   sendSelection();
-  if (activeTab === 'components') renderSidePanel(); // tombol "Jadikan komponen" aktif/nonaktif
+  if (activePanel === 'components') renderSidePanel(); // tombol "Jadikan komponen" aktif/nonaktif
 });
 
 on('hover', () => {
@@ -158,6 +202,7 @@ on('hover', () => {
 
 on('edit', (id) => {
   scheduleSave(id);
+  syncArtboardCorners(id); // radius artboard langsung terlihat di kanvas
   drawOverlay();
   if (!connected) updateOffline();
 });
@@ -168,13 +213,17 @@ on('structure', (id) => {
   renderLayers();
   drawOverlay();
   if (state.selection?.artboardId === id) renderProperties();
-  if (activeTab === 'components') renderSidePanel();
+  if (activePanel === 'components') renderSidePanel();
 });
 
 on('toast', (message) => showToast(message));
 
-// Token berubah: panel token (saat tidak ada yang dipilih) dan field yang memakai token ikut diperbarui.
-on('tokens', () => renderProperties());
+// Variabel berubah: tab Variabel, tabelnya, dan field yang memakai variabel ikut diperbarui.
+on('tokens', () => {
+  renderProperties();
+  if (activePanel === 'variables') renderSidePanel();
+  refreshVariablesTable();
+});
 
 on('saved', (id) => {
   if (state.selection?.artboardId === id) sendSelection();
@@ -238,7 +287,7 @@ function connect() {
   ws.addEventListener('close', () => {
     connected = false;
     statusEl.classList.remove('online');
-    statusEl.title = 'Terputus, mencoba menyambung lagi…';
+    statusEl.title = 'Terputus, mencoba menyambung lagiâ€¦';
     updateOffline();
     setTimeout(connect, retry);
     retry = Math.min(retry * 2, 5000);
@@ -263,7 +312,6 @@ async function load() {
 }
 
 // ---------- Mulai ----------
-setTab(activeTab);
 loadTokens().catch(() => {});
 loadFonts().catch(() => {});
 load().then(() => {

@@ -1,24 +1,88 @@
-// Design tokens: editor token (panel kanan saat tidak ada yang dipilih) dan pemilih token untuk field properti.
-// Sumbernya file designs/tokens.css; setiap artboard me-link file itu.
+// Data variabel (design tokens) di editor: memuat, menyimpan (dengan undo), dan menerapkan ke artboard.
+// Tampilan pengelolaannya ada di variables.js (tab Variabel + tabel).
 import { state, emit, toast } from './state.js';
 import { push } from './history.js';
-import { openFontMenu, primaryFamily, fontFamilyValue } from './fonts.js';
 
+// { modes: ['Default', ...], groups: [{ id, name, type }], tokens: { nama: { Mode: nilai } }, slugs: { Mode: slug } }
+export let data = { modes: ['Default'], groups: [], tokens: {}, slugs: { Default: 'default' } };
+// Nilai mode default saja (dipakai menu token di panel properti).
 export let tokens = {};
-let groups = [];
 
 export async function loadTokens() {
   const res = await fetch('/api/tokens');
-  ({ tokens, groups } = await res.json());
+  setData(await res.json());
+}
+
+// true kalau server masih versi lama (belum di-restart setelah update), yang belum mengenal mode/grup.
+export let legacyServer = false;
+
+function setData(next) {
+  legacyServer = !Array.isArray(next.modes);
+  if (legacyServer) {
+    toast('Server masih versi lama. Restart server (Ctrl+C lalu npm.cmd start) supaya fitur Variabel berfungsi.');
+    next = { modes: ['Default'], groups: [], tokens: {} };
+  }
+  const slugs = next.slugs ?? {};
+  data = { modes: next.modes, groups: next.groups, tokens: next.tokens };
+  data.slugs = Object.fromEntries(data.modes.map((m) => [m, slugs[m] ?? modeSlug(m)]));
+  tokens = Object.fromEntries(Object.entries(data.tokens).map(([n, byMode]) => [n, byMode[data.modes[0]]]));
   emit('tokens');
 }
 
-export function groupOf(name) {
-  return groups.find(([prefix]) => name.startsWith(`${prefix}-`))?.[0] ?? 'other';
+export function modeSlug(mode) {
+  return mode.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'mode';
 }
 
-export function tokensIn(group) {
-  return Object.keys(tokens).filter((n) => groupOf(n) === group);
+// Grup sebuah variabel: awalan terpanjang yang cocok (mis. "text-" untuk "text-lg").
+export function groupOf(name) {
+  let best = null;
+  for (const g of data.groups) {
+    if (name.startsWith(`${g.id}-`) && (!best || g.id.length > best.id.length)) best = g;
+  }
+  return best?.id ?? 'other';
+}
+
+export function groupInfo(id) {
+  return data.groups.find((g) => g.id === id) ?? { id: 'other', name: 'Lainnya', type: 'text' };
+}
+
+export function tokensIn(groupId) {
+  return Object.keys(data.tokens).filter((n) => groupOf(n) === groupId);
+}
+
+// Salinan data untuk diubah lalu disimpan.
+export function cloneData() {
+  return JSON.parse(JSON.stringify({ modes: data.modes, groups: data.groups, tokens: data.tokens }));
+}
+
+// Simpan variabel (dengan undo). Mengembalikan false kalau server menolak.
+export async function saveVariables(next, label = 'Ubah variabel') {
+  const before = cloneData();
+  if (!(await write(next))) return false;
+  push({ label, undo: () => write(before), redo: () => write(next) });
+  return true;
+}
+
+async function write(next) {
+  let res;
+  try {
+    res = await fetch('/api/tokens', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    });
+  } catch {
+    toast('Server terputus: variabel belum tersimpan');
+    return false;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    toast(`Gagal menyimpan variabel: ${(err.error ?? '').slice(0, 120)}`);
+    return false;
+  }
+  setData(next);
+  await refreshArtboardTokens();
+  return true;
 }
 
 // Terapkan tokens.css terbaru ke semua artboard tanpa memuat ulang dan tanpa mengubah HTML-nya
@@ -39,7 +103,8 @@ function applyTo(iframe, css) {
   if (!win?.document) return;
   const sheet = new win.CSSStyleSheet();
   sheet.replaceSync(css);
-  win.document.adoptedStyleSheets = [sheet];
+  // Pertahankan aturan bantu sudut artboard (lihat syncArtboardCorners).
+  win.document.adoptedStyleSheets = [sheet, ...win.document.adoptedStyleSheets.filter((s) => s.editorCorners)];
   applyFontImports(win.document);
 }
 
@@ -55,138 +120,50 @@ export function applyFontImports(doc) {
   }
 }
 
-async function saveTokens(next, label = 'Ubah token') {
-  const before = { ...tokens };
-  await write(next);
-  push({ label, undo: () => write(before), redo: () => write(next) });
-}
+// ---------- Pratinjau kecil nilai variabel ----------
 
-async function write(next) {
-  let res;
-  try {
-    res = await fetch('/api/tokens', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tokens: next }),
-    });
-  } catch {
-    return toast('Server terputus: token belum tersimpan');
-  }
-  if (!res.ok) return toast('Gagal menyimpan token. Nilai tidak boleh mengandung ; { }');
-  tokens = next;
-  emit('tokens');
-  await refreshArtboardTokens();
-}
-
-// ---------- Panel token ----------
-
-export function renderTokensPanel(panel) {
-  const head = el('div', 'props-header');
-  head.append(el('span', 'tag-pill', 'tokens'), el('span', 'props-name', 'designs/tokens.css'));
-  panel.append(head);
-  panel.append(el('div', 'props-hint pad', 'Token dipakai semua artboard lewat var(--nama). Ubah di sini, semua desain ikut berubah. Pilih elemen untuk mengedit propertinya.'));
-
-  for (const [prefix, title] of [...groups, ['other', 'Lainnya']]) {
-    const names = tokensIn(prefix);
-    if (prefix === 'other' && !names.length) continue;
-    const section = el('div', 'prop-section');
-    const titleRow = el('div', 'prop-title token-title');
-    titleRow.append(el('span', '', title));
-    if (prefix !== 'other') {
-      const add = el('button', 'icon-text-btn', '+');
-      add.title = `Tambah token ${title.toLowerCase()}`;
-      add.addEventListener('click', () => section.append(newTokenRow(prefix)));
-      titleRow.append(add);
-    }
-    section.append(titleRow);
-    for (const name of names) section.append(tokenRow(name, prefix));
-    panel.append(section);
-  }
-}
-
-function tokenRow(name, prefix) {
-  const row = el('div', 'token-row');
-  row.append(preview(prefix, tokens[name]));
-  row.append(el('span', 'token-name', name));
-  const input = el('input', 'token-value');
-  input.value = tokens[name];
-  input.spellcheck = false;
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
-  input.addEventListener('change', () => {
-    const value = input.value.trim();
-    if (value && value !== tokens[name]) saveTokens({ ...tokens, [name]: value });
-  });
-  row.append(input);
-  // Token font: pilih dari Google Fonts (font-nya otomatis dimuat lewat tokens.css).
-  if (prefix === 'font') {
-    const pick = el('button', 'token-btn', '▾');
-    pick.title = 'Pilih Google Font';
-    pick.addEventListener('click', () => openFontMenu(pick, primaryFamily(tokens[name]), (font) => {
-      saveTokens({ ...tokens, [name]: fontFamilyValue(font) }, 'Ganti font token');
-    }));
-    row.append(pick);
-  }
-  const del = el('button', 'token-del', '×');
-  del.title = 'Hapus token';
-  del.addEventListener('click', () => {
-    const next = { ...tokens };
-    delete next[name];
-    saveTokens(next, 'Hapus token');
-  });
-  row.append(del);
-  return row;
-}
-
-function newTokenRow(prefix) {
-  const row = el('div', 'token-row');
-  const name = el('input', 'token-value');
-  name.placeholder = `${prefix}-nama`;
-  name.value = `${prefix}-`;
-  const value = el('input', 'token-value');
-  value.placeholder = prefix === 'color' ? '#4f46e5' : prefix === 'font' ? 'Inter, sans-serif' : '16px';
-  const commit = () => {
-    const n = name.value.trim();
-    const v = value.value.trim();
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(n)) return toast('Nama token: huruf kecil, angka, dan tanda hubung');
-    if (!v) return;
-    saveTokens({ ...tokens, [n]: v }, 'Tambah token');
-  };
-  value.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); });
-  row.append(name, value);
-  setTimeout(() => { name.focus(); name.setSelectionRange(name.value.length, name.value.length); });
-  return row;
-}
-
-function preview(prefix, value) {
-  const p = el('span', 'token-preview');
-  if (prefix === 'color') p.style.background = value;
-  else if (prefix === 'radius') { p.classList.add('outline'); p.style.borderRadius = value; }
-  else if (prefix === 'shadow') { p.classList.add('light'); p.style.boxShadow = value; }
-  else if (prefix === 'font') { p.textContent = 'Aa'; p.style.fontFamily = value; }
-  else if (prefix === 'text') { p.textContent = 'A'; }
-  else if (prefix === 'space') { p.classList.add('space'); p.style.width = `min(${value}, 20px)`; }
+export function tokenPreview(groupId, value) {
+  const type = groupInfo(groupId).type;
+  const p = document.createElement('span');
+  p.className = 'token-preview';
+  if (type === 'color') p.style.background = value;
+  else if (type === 'font') { p.textContent = 'Aa'; p.style.fontFamily = value; }
+  else if (groupId === 'radius') { p.classList.add('outline'); p.style.borderRadius = value; }
+  else if (groupId === 'shadow') { p.classList.add('light'); p.style.boxShadow = value; }
+  else if (groupId === 'text') p.textContent = 'A';
+  else if (type === 'size') { p.classList.add('space'); p.style.width = `min(${value}, 16px)`; }
+  else p.textContent = '·';
   return p;
 }
 
-// ---------- Pemilih token untuk field properti ----------
+// ---------- Pemilih variabel untuk field properti ----------
 
 let menu = null;
 
-// Tampilkan daftar token satu grup di bawah tombol; onPick menerima "var(--nama)".
-export function openTokenMenu(anchor, group, onPick) {
+// Tampilkan variabel yang cocok untuk field: grup `preferred` dulu, lalu grup lain yang tipenya sama.
+// onPick menerima "var(--nama)".
+export function openTokenMenu(anchor, preferred, onPick) {
   closeTokenMenu();
-  const names = tokensIn(group);
+  const type = groupInfo(preferred).type;
+  const groups = [...data.groups.filter((g) => g.id === preferred), ...data.groups.filter((g) => g.id !== preferred && g.type === type)];
   menu = el('div', 'token-menu');
-  if (!names.length) menu.append(el('div', 'token-menu-empty', 'Belum ada token di grup ini'));
-  for (const name of names) {
-    const item = el('button', 'token-menu-item');
-    item.append(preview(group, tokens[name]), el('span', 'token-name', name), el('span', 'token-menu-value', tokens[name]));
-    item.addEventListener('click', () => { closeTokenMenu(); onPick(`var(--${name})`); });
-    menu.append(item);
+  let count = 0;
+  for (const g of groups) {
+    const names = tokensIn(g.id);
+    if (!names.length) continue;
+    menu.append(el('div', 'token-menu-group', g.name));
+    for (const name of names) {
+      const item = el('button', 'token-menu-item');
+      item.append(tokenPreview(g.id, tokens[name]), el('span', 'token-name', name), el('span', 'token-menu-value', tokens[name]));
+      item.addEventListener('click', () => { closeTokenMenu(); onPick(`var(--${name})`); });
+      menu.append(item);
+      count++;
+    }
   }
+  if (!count) menu.append(el('div', 'token-menu-empty', 'Belum ada variabel yang cocok. Tambahkan di tab Variabel.'));
   document.body.append(menu);
   const r = anchor.getBoundingClientRect();
-  menu.style.top = `${Math.min(r.bottom + 4, innerHeight - menu.offsetHeight - 8)}px`;
+  menu.style.top = `${Math.max(8, Math.min(r.bottom + 4, innerHeight - menu.offsetHeight - 8))}px`;
   menu.style.left = `${Math.max(8, r.right - menu.offsetWidth)}px`;
   setTimeout(() => addEventListener('pointerdown', outside, true));
 }

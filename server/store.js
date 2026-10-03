@@ -119,13 +119,15 @@ export async function deleteArtboard(id) {
   const artboards = await listArtboards();
   const artboard = artboards.find((a) => a.id === id);
   if (!artboard) throw new Error(`Artboard "${id}" tidak ditemukan.`);
+  // Keluarkan dari daftar DULU, baru pindahkan file-nya. Kalau urutannya terbalik, simpanan editor
+  // yang datang di sela-sela bisa membuat file artboard baru yang tidak terdaftar.
+  await saveManifest(artboards.filter((a) => a.id !== id));
   const trashDir = path.join(DESIGNS_DIR, '.trash');
   await fs.mkdir(trashDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   await fs.rename(artboardPath(artboard), path.join(trashDir, `${artboard.id}-${stamp}.html`)).catch((err) => {
     if (err.code !== 'ENOENT') throw err;
   });
-  await saveManifest(artboards.filter((a) => a.id !== id));
   return artboard;
 }
 

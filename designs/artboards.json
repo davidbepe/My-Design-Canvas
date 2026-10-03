@@ -1,22 +1,22 @@
 {
   "artboards": [
     {
-      "id": "login-mobile",
-      "name": "Login - Mobile",
-      "width": 390,
-      "height": 844,
-      "x": 0,
-      "y": 0,
-      "file": "login-mobile.html"
-    },
-    {
-      "id": "home-desktop",
-      "name": "Home - Desktop",
+      "id": "frame-1",
+      "name": "Frame 1",
       "width": 1440,
       "height": 900,
-      "x": 470,
+      "x": 2046,
       "y": 0,
-      "file": "home-desktop.html"
+      "file": "frame-1.html"
+    },
+    {
+      "id": "image",
+      "name": "image",
+      "width": 350,
+      "height": 131,
+      "x": 3707,
+      "y": 0,
+      "file": "image.html"
     }
   ]
 }

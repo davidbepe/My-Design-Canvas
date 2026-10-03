@@ -2,15 +2,21 @@
 // Juga menggambar garis biru seleksi dan handle resize.
 import {
   state, emit, setHover, setSelection, getArtboard, docOf, resolve, pathOf, sameRef, visibleChildren,
-  isEditableTarget, setTool, isSelected, toggleSelection, DRAW_TOOLS, COMPONENT_ROLE,
+  isEditableTarget, setTool, isSelected, toggleSelection, DRAW_TOOLS, VECTOR_TOOLS, COMPONENT_ROLE,
 } from './state.js';
 import { toLocal, screenToWorld, worldToScreen, wantsPan, isPanning } from './camera.js';
 import { layoutArtboards } from './artboards.js';
 import { changeArtboard } from './actions.js';
-import { group } from './history.js';
+import { group, captureDoc } from './history.js';
 import { isTextLeaf, startTextEdit, finishTextEdit, isEditingText, startRename } from './textedit.js';
 import { finishDraw, containerRefAt, artboardAt } from './draw.js';
-import { snapRect, showGuidesFor, clearGuides, drawGuides } from './guides.js';
+import {
+  snapRect, snapMove, artboardBoxes, showGuidesFor, clearGuides, drawGuides,
+} from './guides.js';
+import {
+  vectorDown, vectorMove, vectorUp, vectorDoubleClick, isDrawingVector, redrawVector,
+} from './vector.js';
+import { isFree, freePosition } from './position.js';
 
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const DRAG_THRESHOLD = 4;
@@ -50,6 +56,14 @@ function onDown(e, viewportEl) {
   if (isEditableTarget(e.target)) return; // sedang mengganti nama artboard
   finishTextEdit();
 
+  if (VECTOR_TOOLS.has(state.tool)) {
+    const { sx, sy } = toLocal(e);
+    gesture = { kind: 'vector' };
+    vectorDown(screenToWorld(sx, sy), e);
+    viewportEl.setPointerCapture(e.pointerId);
+    return;
+  }
+
   if (DRAW_TOOLS.has(state.tool)) {
     const { sx, sy } = toLocal(e);
     const p = screenToWorld(sx, sy);
@@ -69,9 +83,33 @@ function onDown(e, viewportEl) {
     const inSelectedArtboard = hit && isSelected({ artboardId: hit.artboardId, path: [] });
     // Artboard bisa digeser lewat namanya, atau dari dalam artboard yang sedang terpilih.
     const movable = hit && (onLabel || inSelectedArtboard) ? hit.artboardId : null;
-    gesture = { kind: 'click', hit, movable, shift: e.shiftKey, ...start(e, movable) };
+    // Elemen berposisi bebas (atau yang berada di dalamnya) bisa langsung di-drag.
+    const freeRef = !movable && hit?.path.length ? freeAncestor(hit) : null;
+    gesture = { kind: 'click', hit, movable, freeRef, shift: e.shiftKey, ...start(e, movable) };
   }
   viewportEl.setPointerCapture(e.pointerId);
+}
+
+function freeAncestor(ref) {
+  let el = resolve(ref);
+  while (el && el.tagName !== 'BODY') {
+    if (isFree(el)) return { artboardId: ref.artboardId, path: pathOf(el) };
+    el = el.parentElement;
+  }
+  return null;
+}
+
+// Kotak-kotak acuan untuk snap elemen bebas: induknya dan saudara-saudaranya.
+function siblingBoxes(el, ref) {
+  const boxes = [];
+  const parentBox = rectOf({ artboardId: ref.artboardId, path: ref.path.slice(0, -1) });
+  if (parentBox) boxes.push(parentBox);
+  for (const child of visibleChildren(el.parentElement)) {
+    if (child === el) continue;
+    const r = rectOf({ artboardId: ref.artboardId, path: pathOf(child) });
+    if (r && r.w && r.h) boxes.push(r);
+  }
+  return boxes;
 }
 
 function start(e, artboardId) {
@@ -85,6 +123,11 @@ function start(e, artboardId) {
 }
 
 function onMove(e) {
+  if (VECTOR_TOOLS.has(state.tool)) {
+    const { sx, sy } = toLocal(e);
+    if (isDrawingVector()) vectorMove(screenToWorld(sx, sy), e);
+    return;
+  }
   if (!gesture) {
     if (!isPanning() && !e.buttons && !isEditingText()) setHover(hoverTarget(e));
     return;
@@ -95,9 +138,10 @@ function onMove(e) {
     gesture.end = screenToWorld(sx, sy);
     // Frame di luar artboard = artboard baru: sudutnya menempel ke tepi artboard lain.
     if (gesture.tool === 'frame' && !artboardAt(gesture.start.x, gesture.start.y) && !e.ctrlKey) {
-      const { dx, dy } = snapRect({ ...gesture.end, w: 0, h: 0 }, new Set(), { xEdges: ['l'], yEdges: ['t'] });
-      gesture.end = { x: gesture.end.x + dx, y: gesture.end.y + dy };
-      showGuidesFor(drawRect(), new Set());
+      const boxes = artboardBoxes();
+      const { dx, dy } = snapRect({ ...gesture.end, w: 0, h: 0 }, boxes, { xEdges: ['l'], yEdges: ['t'] });
+      gesture.end = { x: gesture.end.x + (dx ?? 0), y: gesture.end.y + (dy ?? 0) };
+      showGuidesFor(drawRect(), boxes, { withSpacing: false });
     }
     drawDrawBox();
     return;
@@ -107,9 +151,34 @@ function onMove(e) {
   const dy = (e.clientY - gesture.py) / z;
 
   if (gesture.kind === 'click') {
-    if (!gesture.movable || Math.hypot(e.clientX - gesture.px, e.clientY - gesture.py) < DRAG_THRESHOLD) return;
-    gesture.kind = 'move';
+    if ((!gesture.movable && !gesture.freeRef) || Math.hypot(e.clientX - gesture.px, e.clientY - gesture.py) < DRAG_THRESHOLD) return;
     setHover(null);
+    if (gesture.freeRef) {
+      // Mulai menggeser elemen berposisi bebas.
+      const ref = gesture.freeRef;
+      if (!isSelected(ref)) setSelection(ref);
+      const el = resolve(ref);
+      Object.assign(gesture, {
+        kind: 'moveEl', ref, el, startPos: freePosition(el), startRect: rectOf(ref), boxes: siblingBoxes(el, ref),
+      });
+    } else {
+      gesture.kind = 'move';
+    }
+  }
+
+  if (gesture.kind === 'moveEl') {
+    const { ref, el, startPos, startRect, boxes } = gesture;
+    const rect = { ...startRect, x: startRect.x + dx, y: startRect.y + dy };
+    const snap = e.ctrlKey ? { dx: 0, dy: 0 } : snapMove(rect, boxes);
+    captureDoc(ref.artboardId, 'Pindah elemen');
+    el.style.left = `${Math.round(startPos.left + dx + snap.dx)}px`;
+    el.style.top = `${Math.round(startPos.top + dy + snap.dy)}px`;
+    showGuidesFor(rectOf(ref), boxes);
+    emit('edit', ref.artboardId);
+    return;
+  }
+
+  if (gesture.kind === 'move' && !gesture.group) {
     // Kalau artboard yang di-drag ikut terpilih bersama artboard lain, geser semuanya.
     const root = { artboardId: gesture.movable, path: [] };
     if (!isSelected(root)) setSelection(root);
@@ -131,14 +200,15 @@ function onMove(e) {
       w: Math.max(...gesture.group.map((g) => g.from.x + g.w)) + dx - x0,
       h: Math.max(...gesture.group.map((g) => g.from.y + g.h)) + dy - y0,
     };
-    const snap = e.ctrlKey ? { dx: 0, dy: 0 } : snapRect(bbox, ids);
+    const boxes = artboardBoxes(ids);
+    const snap = e.ctrlKey ? { dx: 0, dy: 0 } : snapMove(bbox, boxes);
     for (const { id, from } of gesture.group) {
       const b = getArtboard(id);
       if (!b) continue;
       b.x = Math.round(from.x + dx + snap.dx);
       b.y = Math.round(from.y + dy + snap.dy);
     }
-    showGuidesFor({ ...bbox, x: bbox.x + Math.round(snap.dx), y: bbox.y + Math.round(snap.dy) }, ids);
+    showGuidesFor({ ...bbox, x: bbox.x + Math.round(snap.dx), y: bbox.y + Math.round(snap.dy) }, boxes);
     layoutArtboards();
     return;
   }
@@ -159,19 +229,19 @@ function onMove(e) {
       a.y = f.y + f.height - a.height;
     }
     // Hanya tepi yang sedang ditarik yang menempel ke artboard lain.
-    const ids = new Set([a.id]);
+    const boxes = artboardBoxes(new Set([a.id]));
     if (!e.ctrlKey) {
       const xEdges = h.includes('e') ? ['r'] : h.includes('w') ? ['l'] : [];
       const yEdges = h.includes('s') ? ['b'] : h.includes('n') ? ['t'] : [];
-      const snap = snapRect({ x: a.x, y: a.y, w: a.width, h: a.height }, ids, { xEdges, yEdges });
-      const sx = Math.round(snap.dx);
-      const sy = Math.round(snap.dy);
+      const snap = snapRect({ x: a.x, y: a.y, w: a.width, h: a.height }, boxes, { xEdges, yEdges });
+      const sx = Math.round(snap.dx ?? 0);
+      const sy = Math.round(snap.dy ?? 0);
       if (h.includes('e')) a.width = Math.max(1, a.width + sx);
       if (h.includes('w')) { a.x += sx; a.width = Math.max(1, a.width - sx); }
       if (h.includes('s')) a.height = Math.max(1, a.height + sy);
       if (h.includes('n')) { a.y += sy; a.height = Math.max(1, a.height - sy); }
     }
-    showGuidesFor({ x: a.x, y: a.y, w: a.width, h: a.height }, ids);
+    showGuidesFor({ x: a.x, y: a.y, w: a.width, h: a.height }, boxes, { withSpacing: false });
   }
   layoutArtboards();
 }
@@ -180,8 +250,13 @@ function onUp(e) {
   const g = gesture;
   gesture = null;
   if (!g) return;
+  if (g.kind === 'vector') return vectorUp();
   clearGuides();
   drawOverlay();
+  if (g.kind === 'moveEl') {
+    emit('structure', g.ref.artboardId); // perbarui X/Y di panel kanan
+    return;
+  }
   if (g.kind === 'draw') {
     drawBox.hidden = true;
     const dragged = Math.hypot(e.clientX - g.px, e.clientY - g.py) >= DRAG_THRESHOLD;
@@ -248,6 +323,7 @@ function labelAt(e) {
 }
 
 function onDoubleClick(e) {
+  if (VECTOR_TOOLS.has(state.tool)) return vectorDoubleClick();
   if (state.tool !== 'select' || isEditableTarget(e.target)) return;
   const label = labelAt(e);
   if (label) return startRename(label.parentElement.dataset.id);
@@ -284,7 +360,7 @@ function hitTest(e) {
 // Shift+Enter = naik ke induk.
 function onKey(e) {
   if (isEditableTarget(e.target) || e.ctrlKey || e.metaKey) return;
-  if (e.key === 'Escape' && DRAW_TOOLS.has(state.tool)) { setTool('select'); return; } // batal menggambar
+  if (e.key === 'Escape' && (DRAW_TOOLS.has(state.tool) || VECTOR_TOOLS.has(state.tool))) { setTool('select'); return; } // batal menggambar
   if (!state.selection) return;
   const { artboardId, path } = state.selection;
   if (e.key === 'Escape') {
@@ -346,6 +422,7 @@ function extraBox(i) {
 export function drawOverlay() {
   // Garis merah (smart guides / pengukur Alt). Saat mengukur, kotak hover biru diganti kotak merah.
   const measuring = drawGuides(rectOf);
+  redrawVector(); // pratinjau Pen/Pencil ikut bergeser saat kanvas di-zoom/pan
   const showHover = !isEditingText() && !measuring && !isSelected(state.hover);
   place(hoverBox, showHover ? rectOf(state.hover) : null);
 

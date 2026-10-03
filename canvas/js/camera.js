@@ -1,5 +1,5 @@
 // Kamera kanvas: zoom & pan dengan menggeser dan menskalakan "world" lewat CSS transform.
-import { state, emit, isEditableTarget, DRAW_TOOLS } from './state.js';
+import { state, emit, isEditableTarget, DRAW_TOOLS, VECTOR_TOOLS } from './state.js';
 
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 8;
@@ -70,7 +70,7 @@ export function isPanning() {
 export function updateCursor() {
   viewportEl.classList.toggle('can-pan', spaceDown || state.tool === 'hand');
   viewportEl.classList.toggle('panning', !!drag);
-  viewportEl.classList.toggle('can-draw', !spaceDown && DRAW_TOOLS.has(state.tool));
+  viewportEl.classList.toggle('can-draw', !spaceDown && (DRAW_TOOLS.has(state.tool) || VECTOR_TOOLS.has(state.tool)));
 }
 
 // Posisi mouse relatif terhadap pojok kiri-atas kanvas.
@@ -89,9 +89,15 @@ export function worldToScreen(wx, wy) {
   return { x: wx * zoom + x, y: wy * zoom + y };
 }
 
+let settleTimer;
+
 export function applyView() {
   const { x, y, zoom } = state.view;
   worldEl.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  // Mulus selama bergerak, tajam setelah berhenti (lihat #world.moving di CSS).
+  worldEl.classList.add('moving');
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => worldEl.classList.remove('moving'), 150);
   document.documentElement.style.setProperty('--zoom', zoom);
   try { localStorage.setItem(VIEW_KEY, JSON.stringify(state.view)); } catch {}
   emit('view');

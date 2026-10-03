@@ -1,25 +1,33 @@
-// Design tokens: satu file designs/tokens.css berisi variabel CSS (warna, font, spacing, dst.)
-// yang otomatis di-link ke setiap artboard. File CSS ini satu-satunya sumber kebenaran,
-// jadi bisa diedit dari editor, oleh Claude, atau manual.
+// Variabel (design tokens): warna, font, spacing, dst. yang dipakai semua artboard lewat var(--nama).
+//
+// Sumbernya designs/tokens.json (grup, mode, dan nilai per mode). Dari situ dibuat designs/tokens.css
+// secara otomatis; file CSS itulah yang di-link ke setiap artboard.
+// Mode (mis. Light/Dark): mode pertama adalah default (:root); mode lain menimpa nilainya untuk
+// artboard ber-atribut <html data-mode="nama-mode">.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DESIGNS_DIR } from './store.js';
 import { googleFontsUrl, primaryFamily, isGoogleFont } from './fonts.js';
 
 export const TOKENS_FILE = 'tokens.css';
-const TOKENS_PATH = path.join(DESIGNS_DIR, TOKENS_FILE);
+export const VARIABLES_FILE = 'tokens.json';
+const CSS_PATH = path.join(DESIGNS_DIR, TOKENS_FILE);
+const JSON_PATH = path.join(DESIGNS_DIR, VARIABLES_FILE);
 
-// Grup ditentukan dari awalan nama token, mis. --color-primary masuk grup "color".
-export const GROUPS = [
-  ['color', 'Warna'],
-  ['font', 'Font'],
-  ['text', 'Ukuran teks'],
-  ['space', 'Spacing'],
-  ['radius', 'Radius'],
-  ['shadow', 'Shadow'],
+export const TOKEN_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+export const GROUP_TYPES = ['color', 'size', 'font', 'text'];
+
+// Grup default. Anggota grup ditentukan dari awalan nama, mis. "color-primary" masuk grup "color".
+const DEFAULT_GROUPS = [
+  { id: 'color', name: 'Warna', type: 'color' },
+  { id: 'font', name: 'Font', type: 'font' },
+  { id: 'text', name: 'Ukuran teks', type: 'size' },
+  { id: 'space', name: 'Spacing', type: 'size' },
+  { id: 'radius', name: 'Radius', type: 'size' },
+  { id: 'shadow', name: 'Shadow', type: 'text' },
 ];
 
-const DEFAULT_TOKENS = {
+const DEFAULT_VALUES = {
   'color-primary': '#111111',
   'color-accent': '#0d99ff',
   'color-bg': '#ffffff',
@@ -47,51 +55,88 @@ const DEFAULT_TOKENS = {
   'shadow-md': '0 4px 16px rgba(0, 0, 0, 0.08)',
 };
 
-export const TOKEN_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+export function modeSlug(mode) {
+  return mode.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'mode';
+}
+
+// Grup sebuah variabel: awalan terpanjang yang cocok (mis. "text-" untuk "text-lg").
+export function groupOf(name, groups) {
+  let best = null;
+  for (const g of groups) {
+    if (name.startsWith(`${g.id}-`) && (!best || g.id.length > best.id.length)) best = g;
+  }
+  return best?.id ?? 'other';
+}
 
 export async function ensureTokens() {
   try {
-    await fs.access(TOKENS_PATH);
-  } catch {
-    await writeTokens(DEFAULT_TOKENS);
-  }
+    await fs.access(JSON_PATH);
+    return;
+  } catch {}
+  // Pindahkan token lama dari tokens.css (versi sebelum ada mode), atau mulai dari nilai default.
+  let values = DEFAULT_VALUES;
+  try {
+    const css = await fs.readFile(CSS_PATH, 'utf8');
+    const parsed = {};
+    for (const m of css.matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) parsed[m[1]] = m[2].trim();
+    if (Object.keys(parsed).length) values = parsed;
+  } catch {}
+  const tokens = Object.fromEntries(Object.entries(values).map(([n, v]) => [n, { Default: v }]));
+  await writeVariables({ modes: ['Default'], groups: DEFAULT_GROUPS, tokens });
 }
 
-export function parseTokens(css) {
-  const tokens = {};
-  for (const m of css.matchAll(/--([\w-]+)\s*:\s*([^;]+);/g)) tokens[m[1]] = m[2].trim();
-  return tokens;
+export async function readVariables() {
+  return JSON.parse(await fs.readFile(JSON_PATH, 'utf8'));
 }
 
-export async function readTokens() {
-  return parseTokens(await fs.readFile(TOKENS_PATH, 'utf8'));
+// Nilai semua variabel untuk satu mode (mode lain jatuh ke nilai mode default kalau kosong).
+export function valuesFor(data, mode = data.modes[0]) {
+  const out = {};
+  for (const [name, byMode] of Object.entries(data.tokens)) out[name] = byMode[mode] ?? byMode[data.modes[0]];
+  return out;
 }
 
-export function groupOf(name) {
-  return GROUPS.find(([prefix]) => name.startsWith(`${prefix}-`))?.[0] ?? 'other';
+export async function writeVariables(data) {
+  await writeAtomic(JSON_PATH, JSON.stringify(data, null, 2) + '\n');
+  await writeAtomic(CSS_PATH, toCss(data));
 }
 
-export async function writeTokens(tokens) {
-  // Token font yang memakai Google Font: muat font-nya otomatis lewat @import.
-  const googleFamilies = Object.entries(tokens)
-    .filter(([name]) => groupOf(name) === 'font')
-    .map(([, value]) => primaryFamily(value))
+function toCss({ modes, groups, tokens }) {
+  const [base, ...others] = modes;
+  // Font Google yang dipakai variabel font (di mode mana pun) dimuat otomatis lewat @import.
+  const fontGroups = new Set(groups.filter((g) => g.type === 'font').map((g) => g.id));
+  const families = Object.entries(tokens)
+    .filter(([name]) => fontGroups.has(groupOf(name, groups)))
+    .flatMap(([, byMode]) => Object.values(byMode))
+    .map(primaryFamily)
     .filter(isGoogleFont);
-  const fontsUrl = googleFontsUrl(googleFamilies);
+  const fontsUrl = googleFontsUrl(families);
+
   const lines = [
     ...(fontsUrl ? [`@import url("${fontsUrl}");`, ''] : []),
-    '/* Design tokens: dipakai semua artboard lewat var(--nama).',
-    '   Diedit dari panel kanan editor (saat tidak ada yang dipilih), oleh Claude, atau manual. */',
+    '/* Dibuat otomatis dari tokens.json. Edit lewat tab Variabel di editor (atau minta Claude),',
+    '   bukan di file ini, karena perubahan di sini akan tertimpa. */',
     ':root {',
   ];
-  for (const [prefix, title] of [...GROUPS, ['other', 'Lainnya']]) {
-    const names = Object.keys(tokens).filter((n) => groupOf(n) === prefix);
+  for (const g of [...groups, { id: 'other', name: 'Lainnya' }]) {
+    const names = Object.keys(tokens).filter((n) => groupOf(n, groups) === g.id && tokens[n][base] != null);
     if (!names.length) continue;
-    lines.push(`  /* ${title} */`);
-    for (const n of names) lines.push(`  --${n}: ${tokens[n]};`);
+    lines.push(`  /* ${g.name} */`);
+    for (const n of names) lines.push(`  --${n}: ${tokens[n][base]};`);
   }
-  lines.push('}', '');
-  const tmp = `${TOKENS_PATH}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, lines.join('\n'), 'utf8');
-  await fs.rename(tmp, TOKENS_PATH);
+  lines.push('}');
+  for (const mode of others) {
+    const names = Object.keys(tokens).filter((n) => tokens[n][mode] != null && tokens[n][mode] !== '');
+    if (!names.length) continue;
+    lines.push('', `/* Mode: ${mode} */`, `[data-mode="${modeSlug(mode)}"] {`);
+    for (const n of names) lines.push(`  --${n}: ${tokens[n][mode]};`);
+    lines.push('}');
+  }
+  return lines.join('\n') + '\n';
+}
+
+async function writeAtomic(file, content) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  await fs.writeFile(tmp, content, 'utf8');
+  await fs.rename(tmp, file);
 }

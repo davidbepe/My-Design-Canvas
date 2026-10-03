@@ -1,7 +1,7 @@
 // Simpan editan ke file HTML di designs/. Ditunda sebentar supaya saat kamu men-drag
 // sebuah nilai, file tidak ditulis puluhan kali per detik.
 // Kalau server sedang mati, artboard dicatat sebagai "belum tersimpan" dan dikirim ulang saat tersambung lagi.
-import { emit, docOf } from './state.js';
+import { emit, docOf, getArtboard } from './state.js';
 import { serialize } from './artboards.js';
 
 const DELAY = 400;
@@ -29,6 +29,7 @@ export async function retryFailed() {
 
 async function save(artboardId) {
   timers.delete(artboardId);
+  if (!getArtboard(artboardId)) { failed.delete(artboardId); return; } // artboard sudah dihapus
   const html = serialize(docOf(artboardId));
   if (!html) return;
   try {

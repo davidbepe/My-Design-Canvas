@@ -1,5 +1,5 @@
-/* Design tokens: dipakai semua artboard lewat var(--nama).
-   Diedit dari panel kanan editor (saat tidak ada yang dipilih), oleh Claude, atau manual. */
+/* Dibuat otomatis dari tokens.json. Edit lewat tab Variabel di editor (atau minta Claude),
+   bukan di file ini, karena perubahan di sini akan tertimpa. */
 :root {
   /* Warna */
   --color-primary: #111111;

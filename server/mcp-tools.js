@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import * as store from './store.js';
 import { screenshotArtboard, queryArtboard } from './renderer.js';
-import { readTokens, writeTokens, TOKEN_NAME } from './tokens.js';
+import { readVariables, writeVariables, modeSlug, TOKEN_NAME } from './tokens.js';
 import { searchIcons, iconSvg } from './icons.js';
 import { GOOGLE_FONTS } from './fonts.js';
 import { listVersions, saveVersion, restoreVersion } from './versions.js';
@@ -139,34 +139,50 @@ export function registerTools(server, { canvasUrl }) {
     'get_tokens',
     {
       description:
-        'Daftar design tokens dari designs/tokens.css (nama → nilai). Pakai di HTML sebagai var(--nama). ' +
-        'Grup dari awalan nama: color-, font- (keluarga font), text- (ukuran teks), space-, radius-, shadow-.',
+        'Variabel design system (tab "Variabel" di editor): grup, mode, dan nilai setiap variabel per mode. ' +
+        'Pakai di HTML sebagai var(--nama). Grup ditentukan dari awalan nama (mis. color-, space-). ' +
+        'Mode pertama adalah default; mode lain (mis. Dark) aktif untuk artboard dengan <html data-mode="slug-mode">.',
       inputSchema: {},
     },
-    safe(async () => json(await readTokens())),
+    safe(async () => {
+      const data = await readVariables();
+      return json({ ...data, modeAttribute: Object.fromEntries(data.modes.map((m) => [m, modeSlug(m)])) });
+    }),
   );
 
+  const tokenValue = z.string().regex(/^[^;{}]+$/, 'Nilai token tidak boleh mengandung ; { }');
   server.registerTool(
     'set_tokens',
     {
       description:
-        'Tambah, ubah, atau hapus design tokens. Semua artboard yang memakai token itu langsung ikut berubah. ' +
-        'Kirim hanya token yang berubah; nilai null = hapus token.',
+        'Tambah, ubah, atau hapus variabel. Semua artboard yang memakainya langsung ikut berubah. ' +
+        'Kirim hanya yang berubah. Nilai berupa teks = nilai untuk mode default (atau `mode` kalau diisi); ' +
+        'objek {"Default": "...", "Dark": "..."} = nilai per mode; null = hapus variabel. ' +
+        '`addModes` menambah mode baru (mis. ["Dark"]).',
       inputSchema: {
         tokens: z.record(
           z.string().regex(TOKEN_NAME, 'Nama token: huruf kecil, angka, dan tanda hubung, mis. color-primary'),
-          z.string().regex(/^[^;{}]+$/, 'Nilai token tidak boleh mengandung ; { }').nullable(),
-        ).describe('Mis. {"color-primary": "#4f46e5", "space-5": "20px", "color-old": null}'),
+          z.union([tokenValue, z.record(z.string(), tokenValue), z.null()]),
+        ).describe('Mis. {"color-primary": "#4f46e5", "color-bg": {"Default": "#fff", "Dark": "#111"}, "color-old": null}'),
+        mode: z.string().optional().describe('Mode untuk nilai berupa teks (default: mode pertama)'),
+        addModes: z.array(z.string().min(1).max(40)).optional(),
       },
     },
-    safe(async ({ tokens: changes }) => {
-      const tokens = await readTokens();
+    safe(async ({ tokens: changes, mode, addModes }) => {
+      const data = await readVariables();
+      for (const m of addModes ?? []) if (!data.modes.includes(m)) data.modes.push(m);
+      const target = mode ?? data.modes[0];
+      if (!data.modes.includes(target)) throw new Error(`Mode "${target}" tidak ada. Mode yang tersedia: ${data.modes.join(', ')}`);
       for (const [name, value] of Object.entries(changes)) {
-        if (value === null) delete tokens[name];
-        else tokens[name] = value.trim();
+        if (value === null) { delete data.tokens[name]; continue; }
+        const byMode = { ...(data.tokens[name] ?? {}) };
+        if (typeof value === 'string') byMode[target] = value.trim();
+        else for (const [m, v] of Object.entries(value)) byMode[m] = v.trim();
+        if (byMode[data.modes[0]] == null) throw new Error(`"${name}" butuh nilai untuk mode default (${data.modes[0]}).`);
+        data.tokens[name] = byMode;
       }
-      await writeTokens(tokens);
-      return json(tokens);
+      await writeVariables(data);
+      return json(data);
     }),
   );
 

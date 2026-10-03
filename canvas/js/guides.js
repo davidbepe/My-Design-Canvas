@@ -1,13 +1,18 @@
-// Garis bantu merah ala Figma:
-// 1. Smart guides + snap saat menggeser, resize, atau menggambar artboard (tepi & tengah sejajar).
-// 2. Pengukur jarak: pilih elemen, tahan Alt, arahkan mouse ke elemen lain (atau ke induknya).
+// Garis bantu ala Figma:
+// 1. Smart guides + snap: tepi & tengah sejajar (garis merah).
+// 2. Jarak sama (garis pink + angka): objek tepat di tengah dua tetangga, atau jaraknya sama dengan
+//    jarak antar-objek lain di baris/kolom yang sama. Objek juga menempel ke jarak itu.
+// 3. Pengukur jarak: pilih elemen, tahan Alt, arahkan mouse ke elemen lain (atau ke induknya).
+//
+// Semua kotak memakai koordinat world: { x, y, w, h }.
 import { state, sameRef, isEditableTarget, emit } from './state.js';
 import { worldToScreen } from './camera.js';
 
 const SNAP_PX = 6; // jarak "menempel", dalam piksel layar
 
 let layer;
-let guides = []; // garis sejajar (koordinat world): { axis: 'x'|'y', at, from, to }
+let guides = []; // garis sejajar: { axis: 'x'|'y', at, from, to }
+let spacing = []; // jarak sama: { dir: 'h'|'v', from, to, at, value }
 let measuring = false;
 
 export function initGuides(overlayEl) {
@@ -33,45 +38,97 @@ export function initGuides(overlayEl) {
 
 export const isMeasuring = () => measuring;
 
-// ---------- Smart guides & snap ----------
+export function artboardBoxes(excludeIds = new Set()) {
+  return state.artboards
+    .filter((a) => !excludeIds.has(a.id))
+    .map((a) => ({ x: a.x, y: a.y, w: a.width, h: a.height }));
+}
 
 const xsOf = (r) => ({ l: r.x, c: r.x + r.w / 2, r: r.x + r.w });
 const ysOf = (r) => ({ t: r.y, m: r.y + r.h / 2, b: r.y + r.h });
-const otherBoxes = (excludeIds) => state.artboards
-  .filter((a) => !excludeIds.has(a.id))
-  .map((a) => ({ x: a.x, y: a.y, w: a.width, h: a.height }));
+const tolerance = () => SNAP_PX / state.view.zoom;
+const closest = (values) => values.filter((v) => v !== null && Math.abs(v) <= tolerance())
+  .reduce((best, v) => (best === null || Math.abs(v) < Math.abs(best) ? v : best), null);
 
-// Cari geseran terkecil supaya salah satu tepi `rect` pas dengan tepi/tengah artboard lain.
+// ---------- Snap tepi & tengah ----------
+
+// Geseran terkecil supaya salah satu tepi `rect` pas dengan tepi/tengah kotak lain.
 // xEdges/yEdges: tepi mana yang boleh menempel (saat resize, hanya tepi yang sedang ditarik).
-export function snapRect(rect, excludeIds, { xEdges = ['l', 'c', 'r'], yEdges = ['t', 'm', 'b'] } = {}) {
-  const t = SNAP_PX / state.view.zoom;
+// Mengembalikan null per sumbu kalau tidak ada yang cukup dekat.
+export function snapRect(rect, boxes, { xEdges = ['l', 'c', 'r'], yEdges = ['t', 'm', 'b'] } = {}) {
   const mx = xsOf(rect);
   const my = ysOf(rect);
-  let dx = null;
-  let dy = null;
-  for (const o of otherBoxes(excludeIds)) {
-    for (const v of Object.values(xsOf(o))) {
-      for (const e of xEdges) {
-        const d = v - mx[e];
-        if (Math.abs(d) <= t && (dx === null || Math.abs(d) < Math.abs(dx))) dx = d;
-      }
-    }
-    for (const v of Object.values(ysOf(o))) {
-      for (const e of yEdges) {
-        const d = v - my[e];
-        if (Math.abs(d) <= t && (dy === null || Math.abs(d) < Math.abs(dy))) dy = d;
-      }
-    }
+  const dxs = [];
+  const dys = [];
+  for (const o of boxes) {
+    for (const v of Object.values(xsOf(o))) for (const e of xEdges) dxs.push(v - mx[e]);
+    for (const v of Object.values(ysOf(o))) for (const e of yEdges) dys.push(v - my[e]);
   }
-  return { dx: dx ?? 0, dy: dy ?? 0 };
+  return { dx: closest(dxs), dy: closest(dys) };
 }
 
-// Garis merah untuk setiap tepi/tengah `rect` yang sejajar dengan artboard lain.
-export function showGuidesFor(rect, excludeIds) {
+// ---------- Jarak sama ----------
+
+// Kotak lain yang sebaris (horizontal) / sekolom (vertikal) dengan rect, diurutkan.
+function lineOf(rect, boxes, dir) {
+  if (dir === 'h') {
+    return boxes.filter((b) => b.y < rect.y + rect.h && b.y + b.h > rect.y).sort((a, b) => a.x - b.x);
+  }
+  return boxes.filter((b) => b.x < rect.x + rect.w && b.x + b.w > rect.x).sort((a, b) => a.y - b.y);
+}
+
+// Untuk satu arah: tetangga sebelum/sesudah rect, dan jarak antar-kotak lain yang sudah ada.
+function spacingContext(rect, boxes, dir, slack) {
+  const pos = dir === 'h' ? 'x' : 'y';
+  const size = dir === 'h' ? 'w' : 'h';
+  const start = rect[pos];
+  const end = rect[pos] + rect[size];
+  const line = lineOf(rect, boxes, dir);
+  const before = line.filter((b) => b[pos] + b[size] <= start + slack).sort((a, b) => (b[pos] + b[size]) - (a[pos] + a[size]))[0];
+  const after = line.filter((b) => b[pos] >= end - slack).sort((a, b) => a[pos] - b[pos])[0];
+  const gaps = [];
+  for (let i = 0; i + 1 < line.length; i++) {
+    const g = line[i + 1][pos] - (line[i][pos] + line[i][size]);
+    if (g > 0) gaps.push({ a: line[i], b: line[i + 1], g });
+  }
+  return {
+    before, after, gaps,
+    gBefore: before ? start - (before[pos] + before[size]) : null,
+    gAfter: after ? after[pos] - end : null,
+  };
+}
+
+// Geseran supaya jarak rect ke tetangga sama dengan jarak lain (di tengah, atau sama dengan pasangan lain).
+export function spacingSnap(rect, boxes) {
+  const out = {};
+  for (const dir of ['h', 'v']) {
+    const { gBefore, gAfter, gaps } = spacingContext(rect, boxes, dir, tolerance());
+    const candidates = [];
+    if (gBefore !== null && gAfter !== null) candidates.push((gAfter - gBefore) / 2);
+    for (const { g } of gaps) {
+      if (gBefore !== null) candidates.push(g - gBefore);
+      if (gAfter !== null) candidates.push(gAfter - g);
+    }
+    out[dir === 'h' ? 'dx' : 'dy'] = closest(candidates);
+  }
+  return out;
+}
+
+// Gabungan snap untuk menggeser: tepi/tengah sejajar atau jarak sama, mana yang lebih dekat.
+export function snapMove(rect, boxes) {
+  const a = snapRect(rect, boxes);
+  const s = spacingSnap(rect, boxes);
+  const pick = (p, q) => (p === null ? q : q === null ? p : Math.abs(p) <= Math.abs(q) ? p : q);
+  return { dx: pick(a.dx, s.dx) ?? 0, dy: pick(a.dy, s.dy) ?? 0 };
+}
+
+// Tampilkan garis merah (sejajar) dan pink (jarak sama) untuk posisi akhir rect.
+export function showGuidesFor(rect, boxes, { withSpacing = true } = {}) {
   guides = [];
+  spacing = [];
   const mx = xsOf(rect);
   const my = ysOf(rect);
-  for (const o of otherBoxes(excludeIds)) {
+  for (const o of boxes) {
     for (const v of Object.values(xsOf(o))) {
       if (Object.values(mx).some((m) => Math.abs(m - v) < 1)) {
         guides.push({ axis: 'x', at: v, from: Math.min(rect.y, o.y), to: Math.max(rect.y + rect.h, o.y + o.h) });
@@ -83,10 +140,38 @@ export function showGuidesFor(rect, excludeIds) {
       }
     }
   }
+  if (withSpacing) addSpacingMarks(rect, boxes);
+}
+
+function addSpacingMarks(rect, boxes) {
+  for (const dir of ['h', 'v']) {
+    const { before, after, gBefore, gAfter, gaps } = spacingContext(rect, boxes, dir, 0.5);
+    const marks = new Set();
+    const same = (p, q) => p !== null && q !== null && p > 0 && Math.abs(p - q) < 1;
+    if (same(gBefore, gAfter)) { marks.add([before, rect]); marks.add([rect, after]); }
+    for (const { a, b, g } of gaps) {
+      if (same(gBefore, g)) { marks.add([before, rect]); marks.add([a, b]); }
+      if (same(gAfter, g)) { marks.add([rect, after]); marks.add([a, b]); }
+    }
+    for (const [p, q] of marks) spacing.push(spacingMark(p, q, dir));
+  }
+}
+
+// Garis jarak di antara dua kotak, di tengah bagian yang saling bertumpuk.
+function spacingMark(p, q, dir) {
+  if (dir === 'h') {
+    const top = Math.max(p.y, q.y);
+    const bottom = Math.min(p.y + p.h, q.y + q.h);
+    return { dir, from: p.x + p.w, to: q.x, at: (top + bottom) / 2, value: q.x - (p.x + p.w) };
+  }
+  const left = Math.max(p.x, q.x);
+  const right = Math.min(p.x + p.w, q.x + q.w);
+  return { dir, from: p.y + p.h, to: q.y, at: (left + right) / 2, value: q.y - (p.y + p.h) };
 }
 
 export function clearGuides() {
   guides = [];
+  spacing = [];
 }
 
 // ---------- Gambar ----------
@@ -98,6 +183,11 @@ export function drawGuides(rectOf) {
   for (const g of guides) {
     if (g.axis === 'x') line(g.at, g.from, g.at, g.to);
     else line(g.from, g.at, g.to, g.at);
+  }
+  for (const s of spacing) {
+    if (s.dir === 'h') line(s.from, s.at, s.to, s.at, 'spacing');
+    else line(s.at, s.from, s.at, s.to, 'spacing');
+    label(s.dir === 'h' ? (s.from + s.to) / 2 : s.at, s.dir === 'h' ? s.at : (s.from + s.to) / 2, Math.round(s.value * 10) / 10, 'spacing');
   }
   return drawMeasure(rectOf);
 }
@@ -121,14 +211,12 @@ function drawMeasure(rectOf) {
   if (contains(A, B)) [A, B] = [B, A]; // terpilih = induk, ditunjuk = anak: ukur anak ke tepi induk
 
   if (contains(B, A)) {
-    // Jarak ke keempat tepi dalam induk
     gap(B.x, A.x, A.cy, 'h');
     gap(A.r, B.r, A.cy, 'h');
     gap(B.y, A.y, A.cx, 'v');
     gap(A.b, B.b, A.cx, 'v');
     return true;
   }
-  // Dua objek terpisah: jarak horizontal dan/atau vertikal di antara keduanya
   const overlapY = [Math.max(A.y, B.y), Math.min(A.b, B.b)];
   const overlapX = [Math.max(A.x, B.x), Math.min(A.r, B.r)];
   const y = overlapY[0] < overlapY[1] ? (overlapY[0] + overlapY[1]) / 2 : A.cy;
@@ -140,7 +228,6 @@ function drawMeasure(rectOf) {
   return true;
 }
 
-// Garis jarak + label angka (dalam px desain).
 function gap(from, to, at, dir) {
   const d = to - from;
   if (d < 0.5) return;
@@ -149,20 +236,19 @@ function gap(from, to, at, dir) {
   label(dir === 'h' ? mid : at, dir === 'h' ? at : mid, Math.round(d * 10) / 10);
 }
 
-// Garis putus-putus dari ujung garis jarak ke objek, kalau keduanya tidak sejajar.
 function connector(B, x, y) {
-  if (y < B.y) line(x, y, x, B.y, true);
-  else if (y > B.b) line(x, B.b, x, y, true);
-  if (x < B.x) line(x, y, B.x, y, true);
-  else if (x > B.r) line(B.r, y, x, y, true);
+  if (y < B.y) line(x, y, x, B.y, 'dashed');
+  else if (y > B.b) line(x, B.b, x, y, 'dashed');
+  if (x < B.x) line(x, y, B.x, y, 'dashed');
+  else if (x > B.r) line(B.r, y, x, y, 'dashed');
 }
 
-function line(x1, y1, x2, y2, dashed = false) {
+function line(x1, y1, x2, y2, variant = '') {
   const p1 = worldToScreen(x1, y1);
   const p2 = worldToScreen(x2, y2);
   const el = document.createElement('div');
   const vertical = Math.abs(p1.x - p2.x) < 0.5;
-  el.className = `guide-line ${vertical ? 'v' : 'h'}${dashed ? ' dashed' : ''}`;
+  el.className = `guide-line ${vertical ? 'v' : 'h'} ${variant}`;
   if (vertical) {
     Object.assign(el.style, { left: `${p1.x}px`, top: `${Math.min(p1.y, p2.y)}px`, width: '1px', height: `${Math.abs(p2.y - p1.y)}px` });
   } else {
@@ -171,10 +257,10 @@ function line(x1, y1, x2, y2, dashed = false) {
   layer.append(el);
 }
 
-function label(x, y, value) {
+function label(x, y, value, variant = '') {
   const p = worldToScreen(x, y);
   const el = document.createElement('div');
-  el.className = 'guide-label';
+  el.className = `guide-label ${variant}`;
   el.textContent = value;
   Object.assign(el.style, { left: `${p.x}px`, top: `${p.y}px` });
   layer.append(el);

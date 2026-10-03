@@ -75,6 +75,7 @@ export function reloadArtboard(id, version) {
     if (old) old.remove();
     node.iframe = next;
     next.style.visibility = '';
+    syncArtboardCorners(id);
     emit('doc', id);
     if (before !== null) emit('external', { id, before });
     // Font web bisa selesai dimuat belakangan dan menggeser layout.
@@ -84,6 +85,39 @@ export function reloadArtboard(id, version) {
 }
 
 // HTML artboard untuk disimpan. Elemen bantu editor ([data-editor-temp]) tidak ikut tersimpan.
+// Radius artboard (border-radius pada <body>) ikut membulatkan kotak artboard di kanvas,
+// seperti corner radius pada frame di Figma.
+//
+// Iframe TIDAK dipotong (dipotong tepat di tepinya akan "memakan" border tipis). Sebagai gantinya,
+// latar artboard dibuat transparan dan <body> menggambar sudut, latar putih, dan border-nya sendiri.
+// Aturan bantu ini dipasang sebagai stylesheet "adopted", jadi tidak ikut tersimpan ke file.
+export function syncArtboardCorners(id) {
+  const node = state.nodes.get(id);
+  const doc = node?.iframe?.contentDocument;
+  if (!doc?.body) return;
+  setCornerSheet(doc, null); // baca gaya asli body tanpa aturan bantu
+  const cs = doc.defaultView.getComputedStyle(doc.body);
+  const radius = cs.borderRadius && cs.borderRadius !== '0px' ? cs.borderRadius : '';
+  node.el.style.borderRadius = radius;
+  node.el.classList.toggle('rounded', !!radius);
+  if (!radius) return;
+  const hasBackground = cs.backgroundColor !== 'rgba(0, 0, 0, 0)' || cs.backgroundImage !== 'none';
+  // Latar <html> yang (hampir) transparan mencegah latar body "tumpah" ke seluruh kotak iframe,
+  // sehingga latar body ikut melengkung mengikuti radius-nya.
+  setCornerSheet(doc, `html { background: rgba(255, 255, 255, 0.004) !important; }${hasBackground ? '' : ' body { background-color: #fff; }'}`);
+}
+
+function setCornerSheet(doc, css) {
+  let sheets = doc.adoptedStyleSheets.filter((s) => !s.editorCorners);
+  if (css) {
+    const sheet = new doc.defaultView.CSSStyleSheet();
+    sheet.replaceSync(css);
+    sheet.editorCorners = true;
+    sheets = [...sheets, sheet];
+  }
+  doc.adoptedStyleSheets = sheets;
+}
+
 export function serialize(doc) {
   if (!doc) return null;
   let root = doc.documentElement;

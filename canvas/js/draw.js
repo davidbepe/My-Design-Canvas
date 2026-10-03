@@ -1,16 +1,21 @@
-// Tool menggambar: Frame (F), Rect (R), Text (T).
+// Tool menggambar: Frame (F), Text (T), dan bentuk (Rectangle, Ellipse, Segitiga, ...).
 //
 // Karena posisi di HTML diatur oleh layout, elemen baru dimasukkan ke WADAH tempat kamu mulai
 // menggambar, di urutan yang paling dekat dengan posisi mouse. Ukurannya mengikuti hasil drag.
+// (Vector dari Pen/Pencil berbeda: diletakkan bebas persis di tempat digambar, lihat vector.js.)
 import {
   state, docOf, pathOf, setSelection, setTool, toast, emit, HIDDEN_TAGS, CONTAINER_TAGS,
 } from './state.js';
 import { recordDoc } from './history.js';
 import { createArtboardWithHistory } from './actions.js';
 import { startTextEdit } from './textedit.js';
+import { SHAPE_TOOLS, SHAPE_LABELS, buildShape } from './shapes.js';
 
 const DEFAULT_SIZE = 100;
-const LABELS = { frame: 'Tambah frame', rect: 'Tambah rectangle', text: 'Tambah teks' };
+const LABELS = {
+  frame: 'Tambah frame', text: 'Tambah teks',
+  ...Object.fromEntries(SHAPE_TOOLS.map((t) => [t, `Tambah ${SHAPE_LABELS[t].toLowerCase()}`])),
+};
 
 export function artboardAt(wx, wy) {
   for (let i = state.artboards.length - 1; i >= 0; i--) {
@@ -21,7 +26,7 @@ export function artboardAt(wx, wy) {
 }
 
 // Naik dari elemen di bawah kursor sampai ketemu elemen yang bisa menjadi wadah.
-function containerAt(artboard, wx, wy) {
+export function containerAt(artboard, wx, wy) {
   const doc = docOf(artboard.id);
   if (!doc?.body) return null;
   let el = doc.elementFromPoint(wx - artboard.x, wy - artboard.y) ?? doc.body;
@@ -58,7 +63,8 @@ function nextSiblingFor(container, lx, ly) {
   return null;
 }
 
-function buildElement(doc, tool, w, h, dragged) {
+function buildElement(doc, tool, w, h, dragged, start, end) {
+  if (SHAPE_TOOLS.includes(tool)) return buildShape(doc, tool, w, h, dragged, start, end);
   if (tool === 'text') {
     const p = doc.createElement('p');
     p.textContent = 'Teks';
@@ -109,7 +115,7 @@ export async function finishDraw(tool, start, end, dragged) {
   const cy = rect.y + rect.h / 2 - artboard.y;
   let created;
   recordDoc(artboard.id, LABELS[tool], () => {
-    created = buildElement(container.ownerDocument, tool, rect.w, rect.h, dragged);
+    created = buildElement(container.ownerDocument, tool, rect.w, rect.h, dragged, start, end);
     container.insertBefore(created, nextSiblingFor(container, cx, cy));
     setSelection({ artboardId: artboard.id, path: pathOf(created) });
   });

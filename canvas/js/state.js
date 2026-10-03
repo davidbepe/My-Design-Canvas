@@ -8,7 +8,7 @@ export const state = {
   artboards: [],          // dari designs/artboards.json
   nodes: new Map(),       // id artboard -> { el, label, iframe, pending, file }
   view: { x: 0, y: 0, zoom: 1 },
-  tool: 'select',         // 'select' | 'hand' | 'frame' | 'rect' | 'text'
+  tool: 'select',         // 'select' | 'hand' | 'frame' | 'text' | bentuk (rect, ellipse, ...) | 'pen' | 'pencil'
   selected: [],           // semua ref yang terpilih (Shift+klik untuk menambah)
   hover: null,            // ref
   // Seleksi "utama" = yang terakhir dipilih. Panel properti menampilkan elemen ini.
@@ -27,7 +27,9 @@ export const CONTAINER_TAGS = new Set([
   'BODY', 'DIV', 'SECTION', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ARTICLE', 'ASIDE', 'FORM', 'UL', 'OL', 'LI', 'FIGURE',
 ]);
 
-export const DRAW_TOOLS = new Set(['frame', 'rect', 'text']);
+// Tool yang menggambar kotak dengan drag (frame, teks, bentuk) dan tool vector (klik/garis bebas).
+export const DRAW_TOOLS = new Set(['frame', 'text', 'rect', 'ellipse', 'triangle', 'polygon', 'star', 'line', 'arrow']);
+export const VECTOR_TOOLS = new Set(['pen', 'pencil']);
 
 // Komponen: master ditandai data-component-role="master", salinannya "instance";
 // keduanya berbagi id yang sama di data-component.
