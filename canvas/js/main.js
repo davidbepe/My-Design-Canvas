@@ -1,6 +1,6 @@
 // Titik masuk editor: menghubungkan semua modul dan koneksi live ke server.
 import {
-  state, on, setSelectionList, setHover, setTool, resolve, getArtboard, isEditableTarget, docOf, VECTOR_TOOLS,
+  state, on, setSelectionList, setHover, setTool, resolve, getArtboard, isEditableTarget, docOf, VECTOR_TOOLS, pathOf,
 } from './state.js';
 import { initCamera, fitAll, fitRect, zoomCenter, restoreView, updateCursor } from './camera.js';
 import { initArtboards, renderArtboards, reloadArtboard, syncArtboardCorners } from './artboards.js';
@@ -28,6 +28,7 @@ import { alignSelection, distributeSelection } from './align.js';
 import { initCanvasColor } from './canvasbg.js';
 import { initPixelGrid, updatePixelGrid, isPixelGridOn, setPixelGrid, PIXEL_GRID_MIN_ZOOM } from './pixelgrid.js';
 import { syncHug } from './hug.js';
+import { normalizeTextBoxes } from './textboxes.js';
 import { initGradientHandles, redrawGradientHandles } from './gradhandles.js';
 import {
   renderVariablesPanel, isVariablesOpen, closeVariablesTable, refreshVariablesTable,
@@ -219,7 +220,18 @@ on('artboards', () => {
 });
 
 // Isi artboard selesai dimuat (pertama kali, setelah Claude mengubahnya, atau setelah undo).
+// Kotak berisi teks (mis. <button>Masuk</button>) -> frame + layer teks, seperti di Figma.
+// Membungkus teks bisa menggeser urutan elemen, jadi seleksi dipilih ulang dari elemennya.
+function normalize(id) {
+  const keep = state.selected.filter((r) => r.artboardId === id).map((r) => resolve(r));
+  if (!normalizeTextBoxes(docOf(id))) return false;
+  const others = state.selected.filter((r) => r.artboardId !== id);
+  setSelectionList([...others, ...keep.filter(Boolean).map((el) => ({ artboardId: id, path: el.tagName === 'BODY' ? [] : pathOf(el) }))]);
+  return true;
+}
+
 on('doc', (id) => {
+  if (normalize(id)) scheduleSave(id);
   scheduleHug(id);
   applyFontImports(docOf(id)); // undo mengganti isi dokumen, jadi pasang lagi link font sementara
   syncArtboardCorners(id);
@@ -271,6 +283,7 @@ on('edit', (id) => {
 });
 
 on('structure', (id) => {
+  normalize(id);
   scheduleSave(id);
   scheduleHug(id);
   if (!connected) updateOffline();

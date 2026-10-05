@@ -267,7 +267,16 @@ function expandTo(ref) {
 }
 
 // Ikon SVG dan instance komponen tampil sebagai satu layer (isinya tidak dibuka).
-const isLeaf = (el) => el.tagName.toLowerCase() === 'svg' || el.getAttribute(COMPONENT_ROLE) === 'instance';
+const isLeaf = (el) => el.tagName.toLowerCase() === 'svg' || el.getAttribute(COMPONENT_ROLE) === 'instance' || isRichText(el);
+
+// Teks bercampur gaya, mis. <p>Belum punya akun? <a>Daftar</a></p>: satu layer teks (seperti teks
+// dengan gaya campuran di Figma), bukan frame berisi potongan-potongannya.
+const INLINE_TAGS = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'SMALL', 'MARK', 'CODE', 'SPAN', 'SUB', 'SUP', 'BR', 'ABBR', 'TIME']);
+function isRichText(el) {
+  if (!el.children.length) return false;
+  const ownText = [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+  return ownText && [...el.children].every((c) => INLINE_TAGS.has(c.tagName) && !c.children.length);
+}
 
 // Nama layer ala Figma: layer teks dinamai sesuai isinya, sisanya pakai id/class/tag.
 function describe(el) {
@@ -291,7 +300,7 @@ function describe(el) {
     return { icon: 'input', name: el.getAttribute('placeholder') || el.getAttribute('name') || tag, meta: tag };
   }
   const text = el.textContent.trim().replace(/\s+/g, ' ');
-  if (el.children.length === 0 && text) return { icon: 'text', name: text.slice(0, 40), meta: tag };
+  if ((el.children.length === 0 || isRichText(el)) && text) return { icon: 'text', name: text.slice(0, 40), meta: tag };
   // Nama: data-name (mis. nama artboard yang dimasukkan), id, atau class. Frame tanpa nama khusus
   // dinamai sesuai jenisnya, supaya frame biasa dan auto layout mudah dibedakan.
   const icon = layoutIcon(el);

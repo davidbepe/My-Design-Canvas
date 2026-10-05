@@ -13,7 +13,7 @@ import { openFontMenu, primaryFamily, fontFamilyValue, ensureFontInDoc } from '.
 import { openCode } from './codeexport.js';
 import { openPreview } from './preview.js';
 import {
-  addAutoLayout, removeAutoLayout, alignmentOf, alignmentStyles, sizeModeOf, sizeModeStyles, fixedSizeCleanup,
+  addAutoLayout, removeAutoLayout, alignmentOf, alignmentStyles, sizeModeOf, sizeModeStyles, fixedSizeCleanup, lockHugParent,
 } from './autolayout.js';
 import { isFree, makeFree, makeFlow, freePosition, rotationOf } from './position.js';
 import { SHAPE_LABELS, setShapeCount, CONVERTIBLE_SHAPES, shapeToVector } from './shapes.js';
@@ -435,7 +435,14 @@ function renderPanel() {
       row(s,
         numberField({ label: 'W', value: px(cs.width), unit: 'px', onCommit: sizeCommit('width') }),
         numberField({ label: 'H', value: px(cs.height), unit: 'px', onCommit: sizeCommit('height') }));
-      const toggleMode = (axis, mode) => (on) => setStyles((t) => sizeModeStyles(t, axis, on ? mode : 'fixed'));
+      const toggleMode = (axis, mode) => (on) => {
+        if (on && mode === 'fill') {
+          // Seperti Figma: Fill di dalam induk yang Hug membuat induknya Fixed di ukurannya sekarang.
+          artboardIds.forEach((id) => captureDoc(id));
+          for (const t of targets) lockHugParent(t.el, axis);
+        }
+        setStyles((t) => sizeModeStyles(t, axis, on ? mode : 'fixed'));
+      };
       const w = sizeModeOf(el, 'width');
       const h = sizeModeOf(el, 'height');
       const checks = div('check-grid');
@@ -551,11 +558,33 @@ function renderPanel() {
     }
   }
 
+  // ---------- Input: placeholder & jenis kolom isian ----------
+  const isField = tag === 'input' || tag === 'textarea';
+  if (isField && targets.length === 1) {
+    const s = section('Input');
+    const setAttr = (name, label) => (v) => {
+      captureDoc(ref.artboardId, label);
+      if (v) el.setAttribute(name, v); else el.removeAttribute(name);
+      emit('edit', ref.artboardId);
+      emit('structure', ref.artboardId); // nama layer ikut placeholder
+    };
+    row(s, textField({ label: 'Placeholder', value: el.getAttribute('placeholder') ?? '', onCommit: setAttr('placeholder', 'Ubah placeholder') }));
+    if (tag === 'input') {
+      row(s, selectField({
+        label: 'Jenis', value: (el.getAttribute('type') || 'text').toLowerCase(),
+        options: [['text', 'Teks'], ['email', 'Email'], ['password', 'Kata sandi (••••)'], ['number', 'Angka'], ['tel', 'Telepon'],
+          ['search', 'Pencarian'], ['url', 'URL'], ['date', 'Tanggal'], ['time', 'Jam']],
+        onChange: setAttr('type', 'Ubah jenis input'),
+      }));
+    }
+  }
+
   // ---------- Typography: hanya untuk elemen yang punya teks sendiri (seperti pen.dev) ----------
   // Frame & artboard tidak punya Typography; font dasar halaman diatur lewat variabel font.
-  if (tag !== 'svg' && !isRoot && hasOwnText(el)) {
+  // Kolom isian juga: font, ukuran, dan warna tulisan yang diketik.
+  if (tag !== 'svg' && !isRoot && (hasOwnText(el) || isField)) {
     const t = section('Typography');
-    if (el.children.length === 0 && targets.length === 1) {
+    if (!isField && el.children.length === 0 && targets.length === 1) {
       row(t, textArea({ value: el.textContent, onCommit: (v) => {
         captureDoc(ref.artboardId, 'Edit teks');
         el.textContent = v;
@@ -1258,9 +1287,12 @@ const gapValue = (cs, isRow) => {
 };
 
 // Elemen teks/media tidak punya isi untuk disusun dengan flex layout.
+const INLINE_TAGS = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'SMALL', 'MARK', 'CODE', 'SPAN', 'SUB', 'SUP', 'BR', 'ABBR', 'TIME']);
 function isTextLike(el) {
   if (['IMG', 'INPUT', 'TEXTAREA', 'SELECT', 'VIDEO', 'CANVAS', 'HR', 'IFRAME'].includes(el.tagName)) return true;
-  return el.children.length === 0 && el.textContent.trim() !== '';
+  if (el.children.length === 0) return el.textContent.trim() !== '';
+  // Teks bercampur gaya (mis. teks + <a>/<b>) juga teks, sama seperti di panel Layers.
+  return hasOwnText(el) && [...el.children].every((c) => INLINE_TAGS.has(c.tagName) && !c.children.length);
 }
 
 // Balik (flip) lewat properti CSS "scale": -1 = terbalik.

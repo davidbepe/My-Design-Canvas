@@ -162,13 +162,28 @@ export function sizeModeStyles(el, axis, mode) {
   const { inFlex, row } = parentFlex(el);
   const isMain = inFlex && (axis === 'width') === row;
   const size = Math.round(el.getBoundingClientRect()[axis]);
-  const reset = isMain ? { 'flex-grow': null, 'flex-basis': null } : inFlex ? { 'align-self': null } : {};
-  if (mode === 'fixed') return { ...reset, [axis]: `${size}px` };
+  const reset = isMain ? { 'flex-grow': null, 'flex-basis': null, [`min-${axis}`]: null } : inFlex ? { 'align-self': null } : {};
+  // Elemen sebaris (mis. <span>, <a> di dalam teks) tidak menerima lebar/tinggi: jadikan inline-block.
+  const sizable = el.ownerDocument.defaultView.getComputedStyle(el).display === 'inline' && mode !== 'hug'
+    ? { display: 'inline-block' } : {};
+  if (mode === 'fixed') return { ...reset, ...sizable, [axis]: `${size}px` };
   if (mode === 'hug') return { ...reset, [axis]: 'fit-content' };
-  // fill
-  if (isMain) return { [axis]: 'auto', 'flex-grow': '1', 'flex-basis': '0', [`min-${axis}`]: '0' };
-  if (inFlex) return { [axis]: null, 'align-self': 'stretch' };
-  return { [axis]: '100%' };
+  // fill. Tanpa min-width/height: 0, supaya seperti Figma elemen Fill tidak pernah lebih kecil dari
+  // isinya (di induk yang Hug, flex-basis 0 + min 0 membuat elemen menyusut sampai 0).
+  if (isMain) return { ...sizable, [axis]: 'auto', 'flex-grow': '1', 'flex-basis': '0', [`min-${axis}`]: null };
+  if (inFlex) return { ...sizable, [axis]: null, 'align-self': 'stretch' };
+  return { ...sizable, [axis]: '100%' };
+}
+
+// Seperti Figma: anak diberi Fill pada arah utama auto layout, sedangkan induknya Hug di arah itu.
+// Induknya dijadikan Fixed di ukurannya sekarang, supaya ada ruang yang bisa diisi (kalau tetap Hug,
+// anak yang Fill kehilangan ukurannya sendiri dan mengecil).
+export function lockHugParent(el, axis) {
+  const { inFlex, row } = parentFlex(el);
+  const parent = el.parentElement;
+  if (!inFlex || (axis === 'width') !== row || !parent || parent.tagName === 'BODY') return;
+  if (sizeModeOf(parent, axis) !== 'hug') return;
+  parent.style.setProperty(axis, `${Math.round(parent.getBoundingClientRect()[axis])}px`);
 }
 
 // Mengetik angka di W/H = ukuran tetap, jadi Fill (flex-grow / align-self) dilepas.
